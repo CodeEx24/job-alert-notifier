@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Job Alert Notifier</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <img src="icons/icon32.png" alt="" />
+      <div class="title-group">
+        <h1>Job Alert Notifier</h1>
+        <span class="tagline">OnlineJobs.ph · Glassdoor · LinkedIn · Upwork</span>
+      </div>
+      <button id="settings-toggle" class="icon-btn" title="Settings" aria-label="Open settings">⚙</button>
+    </header>
+
+    <section id="settings-panel" class="settings-panel">
+      <div class="settings-panel-header">
+        <h2>Settings</h2>
+        <button id="settings-close" class="icon-btn" aria-label="Close settings">✕</button>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-row">
+          <span class="settings-row-label">All watches</span>
+          <div class="settings-row-actions">
+            <button id="pause-all" class="secondary">Pause All</button>
+            <button id="resume-all" class="secondary">Resume All</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="settings-per-site-section" class="settings-group">
+        <button
+          type="button"
+          id="settings-per-site-toggle"
+          class="settings-collapse-toggle"
+          aria-expanded="true"
+          aria-controls="settings-per-site"
+        >
+          <span class="settings-row-label">Per-platform <span id="settings-per-site-count" class="settings-per-site-count"></span></span>
+          <span class="settings-collapse-chevron" aria-hidden="true">⌄</span>
+        </button>
+        <div id="settings-per-site"></div>
+      </div>
+
+      <div class="settings-group">
+        <label class="settings-toggle-row">
+          <input type="checkbox" id="mute-notifications" />
+          <span>Mute desktop notifications</span>
+        </label>
+        <p class="hint">
+          Checks and the feed keep working as normal — you just won't get a
+          popup or sound until you turn this back on. Handy for quiet hours.
+        </p>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-row-actions settings-row-actions--start">
+          <button id="export-settings" class="secondary">Export…</button>
+          <button id="import-settings-btn" class="secondary">Import…</button>
+          <input type="file" id="import-settings-file" accept="application/json" hidden />
+        </div>
+        <p class="hint">
+          Back up every watch and setting to a file, or restore from one —
+          handy before uninstalling or when moving to a new computer.
+        </p>
+      </div>
+
+      <div class="settings-group">
+        <button id="reset-extension" class="secondary danger-hover settings-full-width-btn">
+          Reset Extension…
+        </button>
+        <p class="hint">
+          Clears every watch, the feed, and all settings back to defaults.
+          Can't be undone — export a backup first if you might want any of
+          this again.
+        </p>
+      </div>
+
+      <div id="settings-status-msg" class="settings-status"></div>
+    </section>
+
+    <section class="controls">
+      <label for="interval">Check every</label>
+      <select id="interval">
+        <option value="1">1 minute</option>
+        <option value="5">5 minutes</option>
+        <option value="15">15 minutes</option>
+        <option value="30">30 minutes</option>
+      </select>
+      <button id="check-now">Check now</button>
+    </section>
+
+    <section class="controls sound-controls">
+      <label for="sound">Alert sound</label>
+      <select id="sound"></select>
+      <button id="test-sound" class="secondary">Test</button>
+    </section>
+
+    <button
+      id="open-required-tabs"
+      class="secondary open-required-tabs-btn"
+      title="Opens a tab for every watch that needs one open (Glassdoor, LinkedIn) and skips any that are already open. Sites that check fully in the background, like OnlineJobs.ph, are skipped entirely."
+    >
+      Open all tabs my watches need ↗
+    </button>
+
+    <div id="check-status" class="check-status"></div>
+    <div id="check-status-gap" class="check-status-gap" hidden></div>
+
+    <div id="watch-list-banner"></div>
+    <section id="watch-list" class="watch-list"></section>
+
+    <section class="add-watch">
+      <h2>Watch a search</h2>
+      <p class="hint">
+        On OnlineJobs.ph, Glassdoor, LinkedIn, or Upwork, run a job search
+        with whatever filters you want, then paste that results page's URL
+        below — for LinkedIn, either the address-bar URL or a "Jobs"
+        search-page URL both work, it's converted automatically.
+        OnlineJobs.ph checks happen fully in the background — Glassdoor,
+        LinkedIn, and Upwork all need you to keep a tab of that search
+        open (signed in, for Glassdoor and LinkedIn), since all three
+        block background checks (bot protection). Tracking more than one
+        search on the same site? Keep a separate tab open for each one —
+        with multiple tabs of the same site open and none matching a
+        watch exactly, it can't safely tell which tab belongs to which
+        search.
+      </p>
+      <input id="new-url" type="url" placeholder="Paste a job search URL from OnlineJobs.ph, Glassdoor, LinkedIn, or Upwork" />
+      <input id="new-label" type="text" placeholder="Label (e.g. Virtual Assistant jobs)" />
+      <button id="add-watch">Add watch</button>
+      <div id="add-error" class="error"></div>
+    </section>
+
+    <section class="feed-section">
+      <div class="feed-header">
+        <h2>New postings found</h2>
+        <div class="feed-header-actions">
+          <button id="mark-all-visited" class="secondary">Mark all read</button>
+          <button id="clear-feed" class="secondary danger-hover">Clear</button>
+        </div>
+      </div>
+
+      <div class="feed-controls">
+        <input
+          id="feed-search"
+          type="search"
+          class="feed-search"
+          placeholder="Search title or watch…"
+        />
+        <select id="feed-platform-filter" class="feed-platform-filter">
+          <option value="all">All platforms</option>
+        </select>
+        <select id="feed-sort" class="feed-sort">
+          <option value="found-desc">Newest found first</option>
+          <option value="found-asc">Oldest found first</option>
+          <option value="posted-desc">Newest posted first</option>
+          <option value="posted-asc">Oldest posted first</option>
+        </select>
+      </div>
+      <div id="feed-summary" class="feed-summary"></div>
+
+      <div id="feed-list" class="feed-list">
+        <p class="hint">No new postings detected yet.</p>
+      </div>
+      <div id="feed-pagination" class="pagination"></div>
+    </section>
+
+    <footer>
+      <span id="status"></span>
+    </footer>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

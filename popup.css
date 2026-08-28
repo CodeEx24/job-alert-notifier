@@ -1,0 +1,1018 @@
+:root {
+  --accent: #7c3aed;
+  --accent-hover: #6d28d9;
+  --accent-soft: #f3e8ff;
+  --accent-soft-text: #6d28d9;
+  --bg: #f9fafb;
+  --card-bg: #ffffff;
+  --border: #e5e7eb;
+  --text: #1f2937;
+  --text-muted: #6b7280;
+  --text-faint: #9ca3af;
+  --success-bg: #dcfce7;
+  --success-text: #15803d;
+  --paused-bg: #f3f4f6;
+  --paused-text: #6b7280;
+  --danger: #dc2626;
+  --danger-bg: #fee2e2;
+  --danger-hover: #b91c1c;
+  --new-bg: #ede9fe;
+  --new-text: #6d28d9;
+  --visited-bg: #f3f4f6;
+  --visited-text: #16a34a;
+  --warning: #b45309;
+  --warning-bg: #fef3c7;
+  --radius: 10px;
+  --radius-sm: 7px;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow-md: 0 2px 8px rgba(15, 23, 42, 0.06);
+  --focus-ring: 0 0 0 3px rgba(124, 58, 237, 0.25);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --accent: #a78bfa;
+    --accent-hover: #c4b5fd;
+    --accent-soft: #2e1065;
+    --accent-soft-text: #ddd6fe;
+    --bg: #111827;
+    --card-bg: #1a2233;
+    --border: #2d3748;
+    --text: #e5e7eb;
+    --text-muted: #9ca3af;
+    --text-faint: #6b7280;
+    --success-bg: #052e16;
+    --success-text: #4ade80;
+    --paused-bg: #262f3f;
+    --paused-text: #9ca3af;
+    --danger: #f87171;
+    --danger-bg: #3f1d1d;
+    --danger-hover: #fca5a5;
+    --new-bg: #2e1065;
+    --new-text: #d8b4fe;
+    --visited-bg: #1e2b1f;
+    --visited-text: #4ade80;
+    --warning: #fbbf24;
+    --warning-bg: #3f2d05;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 2px 10px rgba(0, 0, 0, 0.35);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 560px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text);
+  background: var(--bg);
+  margin: 0;
+  padding: 14px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 14px;
+}
+
+header img {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+}
+
+header .title-group {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+  flex: 1;
+  min-width: 0;
+}
+
+h1 {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+header .tagline {
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.icon-btn {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.icon-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  border-color: var(--accent-soft);
+}
+
+.settings-panel {
+  display: none;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  padding: 12px;
+  margin-bottom: 14px;
+}
+
+.settings-panel.open {
+  display: block;
+}
+
+.settings-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.settings-panel-header h2 {
+  margin: 0;
+}
+
+.settings-group {
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.settings-group:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.settings-row-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-row-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.settings-row-actions--start {
+  justify-content: flex-start;
+}
+
+.settings-row-actions button {
+  padding: 4px 9px;
+  font-size: 11px;
+}
+
+/* The bare "button" rule (and its :hover/:active/:focus-visible pseudo-
+   classes, which outrank a single plain class on specificity) paints
+   every button purple/white by default — repeated here, explicitly, so
+   this toggle stays a plain inline row in every state rather than
+   flashing into a primary-button look on hover/click. */
+.settings-collapse-toggle,
+.settings-collapse-toggle:hover,
+.settings-collapse-toggle:active,
+.settings-collapse-toggle:focus-visible {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 0;
+  border-radius: 0;
+  cursor: pointer;
+  color: inherit;
+  transform: none;
+  box-shadow: none;
+}
+
+.settings-collapse-toggle:hover .settings-row-label,
+.settings-collapse-toggle:focus-visible .settings-row-label {
+  color: var(--accent);
+}
+
+/* Removing the default button focus ring above (it's the purple-glow
+   style meant for solid primary buttons, which reads oddly on a
+   transparent row) means keyboard focus needs its own visible
+   indicator here instead — an outline, not no indicator at all. */
+.settings-collapse-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.settings-per-site-count {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.settings-collapse-chevron {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+
+.settings-collapse-toggle[aria-expanded="false"] .settings-collapse-chevron {
+  transform: rotate(-90deg);
+}
+
+#settings-per-site {
+  margin-top: 4px;
+}
+
+#settings-per-site.collapsed {
+  display: none;
+}
+
+.settings-site-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.settings-site-row + .settings-site-row {
+  border-top: 1px dashed var(--border);
+}
+
+.settings-site-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.settings-site-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-site-counts {
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.settings-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.settings-toggle-row input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.settings-full-width-btn {
+  width: 100%;
+}
+
+.settings-status {
+  font-size: 11px;
+  min-height: 14px;
+  margin-top: 6px;
+}
+
+.settings-status.success {
+  color: var(--success-text);
+}
+
+.settings-status.error {
+  color: var(--danger);
+}
+
+h2 {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin: 0 0 8px;
+}
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  padding: 10px 12px;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.controls label {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+select,
+input[type="url"],
+input[type="text"],
+input[type="search"] {
+  font: inherit;
+  color: var(--text);
+  background: var(--card-bg);
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-sizing: border-box;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+select {
+  flex: 1;
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M1 1l4 4 4-4' stroke='%239ca3af' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  padding-right: 26px;
+}
+
+input[type="url"],
+input[type="text"] {
+  width: 100%;
+  margin-bottom: 7px;
+}
+
+select:focus,
+input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+button {
+  font: inherit;
+  font-weight: 600;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 7px 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.05s ease;
+}
+
+button:hover {
+  background: var(--accent-hover);
+}
+
+button:active {
+  transform: scale(0.98);
+}
+
+button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+button.secondary:hover {
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  border-color: var(--accent-soft);
+}
+
+button.danger-hover:hover {
+  background: var(--danger-bg);
+  color: var(--danger-hover);
+  border-color: var(--danger-bg);
+}
+
+button:disabled,
+button:disabled:hover {
+  cursor: default;
+  transform: none;
+}
+
+button:not(.secondary):disabled {
+  background: var(--paused-bg);
+  color: var(--paused-text);
+}
+
+button.secondary:disabled {
+  background: transparent;
+  color: var(--text-faint);
+  border-color: var(--border);
+}
+
+button.is-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  opacity: 0.85;
+  animation: spin 0.65s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.sound-controls select {
+  flex: 1;
+}
+
+.sound-controls button {
+  flex-shrink: 0;
+}
+
+.open-required-tabs-btn {
+  display: block;
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  text-align: center;
+}
+
+.check-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.check-status .check-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success-text);
+  flex-shrink: 0;
+}
+
+.check-status-gap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--warning-bg);
+  color: var(--warning);
+  border: 1px solid var(--warning-bg);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+/* The [hidden] attribute's default UA-stylesheet "display: none" loses to
+   this rule's own "display: flex" once both have the same specificity —
+   author CSS always beats the UA stylesheet at an equal-specificity tie,
+   so popup.js setting `.hidden = true` would otherwise silently do
+   nothing and leave an empty amber bar visible. Spelling it out here
+   makes hiding it actually take effect. */
+.check-status-gap[hidden] {
+  display: none;
+}
+
+.watch-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.watch-list-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-bg);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+  margin-bottom: 8px;
+}
+
+.watch-list-banner span {
+  color: var(--danger);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.watch-list-banner button {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  font-size: 11px;
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.watch-list-banner button:hover {
+  background: var(--danger);
+  color: white;
+}
+
+.watch-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+/* Same fix as .settings-collapse-toggle: the bare "button" rule (and its
+   :hover/:active/:focus-visible pseudo-classes, which outrank a single
+   plain class on specificity) paints every button purple/white by
+   default — repeated here, explicitly, so this toggle stays a plain
+   inline row in every state instead of flashing into a primary-button
+   look on hover/click. */
+.watch-group-toggle,
+.watch-group-toggle:hover,
+.watch-group-toggle:active,
+.watch-group-toggle:focus-visible {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  padding: 0;
+  border-radius: 0;
+  cursor: pointer;
+  color: inherit;
+  transform: none;
+  box-shadow: none;
+}
+
+.watch-group-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.watch-group-toggle:hover .watch-group-name,
+.watch-group-toggle:focus-visible .watch-group-name {
+  color: var(--accent);
+}
+
+.watch-group-info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.watch-group-name {
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.watch-group-counts {
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.watch-group-counts-error {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.watch-group-chevron {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+
+.watch-group-toggle[aria-expanded="false"] .watch-group-chevron {
+  transform: rotate(-90deg);
+}
+
+.watch-group-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.watch-group-actions button {
+  padding: 4px 9px;
+  font-size: 11px;
+}
+
+.watch-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.watch-group-body.collapsed {
+  display: none;
+}
+
+/* .watch-list already puts an 8px flex gap between every group — this
+   just adds a thin divider + a little extra breathing room on top of
+   that gap, as a "new platform starts here" cue, without stacking a full
+   second margin on top of the flex gap. */
+.watch-group + .watch-group {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.watch-item {
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  border-radius: var(--radius);
+  padding: 9px 10px;
+  box-shadow: var(--shadow-sm);
+}
+
+.watch-item .row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.watch-item .label-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.watch-item .actions-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.watch-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.watch-item .label {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pill {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.pill--active {
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.pill--paused {
+  background: var(--paused-bg);
+  color: var(--paused-text);
+}
+
+.pill--error {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.watch-item .meta {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-top: 5px;
+}
+
+.watch-item .meta .error {
+  color: var(--danger);
+  display: block;
+}
+
+/* Shown under the error line once a watch has failed several checks in a
+   row (see consecutiveErrors in background.js) — visually distinct (amber,
+   not red) from the error message itself so a fresh one-off failure and a
+   "this has been stuck for a while" pattern don't look identical. */
+.watch-item .meta .stuck-note {
+  color: var(--warning);
+  display: block;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+/* Was a plain <a target="_blank">; is now a <button> (so it can reuse an
+   already-open, possibly drifted, tab instead of always opening a new
+   one — see openOrFocusWatchTab in popup.js). The base global `button`
+   rule and its `:hover`/`:active`/`:focus-visible`/`:disabled` variants
+   all have higher specificity than a lone custom class, so every state
+   needs its reset repeated explicitly here or the default solid-accent
+   "primary button" look bleeds through on interaction. */
+.watch-item .meta .open-search-link,
+.watch-item .meta .open-search-link:hover,
+.watch-item .meta .open-search-link:active,
+.watch-item .meta .open-search-link:focus-visible,
+.watch-item .meta .open-search-link:disabled {
+  display: inline-block;
+  margin-top: 4px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  border-radius: 0;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 11px;
+  text-decoration: none;
+  font: inherit;
+  font-weight: 600;
+  font-size: 11px;
+  cursor: pointer;
+  transform: none;
+  box-shadow: none;
+}
+
+.watch-item .meta .open-search-link:hover {
+  text-decoration: underline;
+  color: var(--accent-hover);
+}
+
+.watch-item .meta .open-search-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.watch-item .meta .open-search-link:disabled {
+  color: var(--text-faint);
+  cursor: default;
+  text-decoration: none;
+}
+
+.watch-item .actions-row button {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.watch-item .edit-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.watch-item .edit-row input {
+  margin-bottom: 0;
+  flex: 1;
+}
+
+.watch-item .edit-row button {
+  padding: 5px 9px;
+  font-size: 11px;
+}
+
+.hint {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin: 0 0 8px;
+}
+
+.add-watch,
+.feed-section {
+  margin-top: 14px;
+}
+
+.feed-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.feed-header h2 {
+  margin: 0;
+}
+
+.feed-header .feed-header-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.feed-header button {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.feed-controls {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.feed-search {
+  flex: 2;
+  min-width: 0;
+}
+
+.feed-platform-filter,
+.feed-sort {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.feed-summary {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-top: 6px;
+}
+
+.feed-summary .clear-filters {
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+  font-size: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  margin-left: 4px;
+}
+
+.feed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.feed-item {
+  position: relative;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  border-radius: var(--radius);
+  padding: 8px 9px;
+  padding-left: 12px;
+  box-shadow: var(--shadow-sm);
+}
+
+.feed-item .feed-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.feed-item a {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.feed-item a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.badge--new {
+  background: var(--new-bg);
+  color: var(--new-text);
+}
+
+.badge--visited {
+  background: var(--visited-bg);
+  color: var(--visited-text);
+}
+
+.salary-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.feed-item .feed-meta {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-top: 3px;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.pagination button {
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
+.pagination button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pagination button:disabled:hover {
+  background: transparent;
+}
+
+.pagination .page-info {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.error {
+  color: var(--danger);
+  font-size: 11px;
+  min-height: 14px;
+}
+
+footer {
+  margin-top: 12px;
+  color: var(--text-faint);
+  font-size: 11px;
+  text-align: center;
+}
