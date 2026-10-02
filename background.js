@@ -22,12 +22,53 @@ import { SITES, siteForUrl, pickWatchTabFromCandidates } from "./sites.js";
 
 const ALARM_NAME = "check-jobs";
 const OFFSCREEN_URL = "offscreen.html";
-const FEED_LIMIT = 100; // cap how many "new job" entries we keep around
 
 // Map of notificationId -> { watchId, jobs } so we know what to open
 // when the user clicks a notification. Lives only in memory; that's fine,
 // since notifications don't need to survive a service worker restart.
 const notificationJobs = new Map();
+
+// How many feed entries to keep PER PLATFORM, not as one shared total.
+// Reported bug: a single high-volume platform (LinkedIn routinely turns up
+// far more new postings per cycle than OnlineJobs.ph, Glassdoor, or Upwork
+// — "the linkedin gets sometimes around more than 100") could fill up the
+// old shared cap entirely, silently pushing every other platform's entries
+// out of the feed ("sometimes I can't see any data like for onlinejobs").
+// Giving each platform its own reserved slice means no platform can ever
+// evict another one's entries, no matter how lopsided the volume gets —
+// worst case with today's four site adapters is 4 × 20 = 80 entries kept
+// total, which is also less than the old flat 100 ever was.
+const FEED_LIMIT_PER_PLATFORM = 20;
+
+// Groups the merged (new + existing) feed entries by platform and keeps
+// only the newest FEED_LIMIT_PER_PLATFORM from each group, instead of one
+// shared slice(0, N) across the whole array. Entries arrive already
+// newest-first within their own platform (new ones are always prepended to
+// the existing array before this runs), so a plain slice per group is
+// enough — no need to re-sort each group first.
+//
+// entry.siteId is the authoritative source (set directly from watch.siteId
+// when the entry was created); sourceKey (`${siteId}:${jobId}`) is the
+// fallback for any entry stored before that field existed, so upgrading
+// doesn't lose track of older entries' platform.
+function trimFeedPerPlatform(feed) {
+  const bySite = new Map();
+  for (const entry of feed) {
+    const siteId = entry.siteId || entry.sourceKey?.split(":")[0] || "__other__";
+    if (!bySite.has(siteId)) bySite.set(siteId, []);
+    bySite.get(siteId).push(entry);
+  }
+  const trimmed = [];
+  for (const entries of bySite.values()) {
+    trimmed.push(...entries.slice(0, FEED_LIMIT_PER_PLATFORM));
+  }
+  // Re-sort by detectedAt desc so the stored array stays meaningful on its
+  // own merit after reassembling multiple platforms' slices — the popup
+  // re-sorts per the user's own chosen sort option at render time anyway,
+  // but there's no reason to leave the stored order interleaved oddly.
+  trimmed.sort((a, b) => b.detectedAt - a.detectedAt);
+  return trimmed;
+}
 
 // ---------- settings / defaults ----------
 
@@ -42,20 +83,137 @@ function defaultWatch() {
   };
 }
 
+// ---------- title relevance filter (Settings-configurable) --------------
+//
+// Reported bug: LinkedIn's own job search isn't a strict "must contain
+// this phrase" match — it's relevance-ranked and pads results with jobs it
+// considers loosely related (recommended-for-you, sponsored, or just
+// filling out a thin result set for a niche query), which is how titles
+// like "Food Safety Manager" or "Learning & Enablement Consultant -
+// Podcasts" end up in a feed meant for developer/engineering roles.
+// Forcing "Most recent" sort (see normalizeLinkedInUrl in sites.js) makes
+// this worse, since date-sorting turns off LinkedIn's own relevance
+// ranking entirely.
+//
+// This is a user-configurable safety net, not a hardcoded "tech jobs"
+// filter: a posting's title only reaches the feed if it contains at least
+// one of the keywords/phrases the user has listed in Settings. Anyone can
+// repoint this at their own field by editing the list — it isn't tied to
+// software/dev roles specifically, that's just this user's starting
+// default. An empty keyword list means "no filtering" (fail open), so
+// clearing the list can never make everything silently disappear.
+//
+// Which sites this applies to: originally LinkedIn only (see
+// TITLE_FILTER_SITE_IDS below) — Glassdoor and Upwork are plain
+// keyword-search listings without LinkedIn's "recommended for you"
+// padding, so filtering them too would just be unnecessary risk of
+// dropping a genuine match. OnlineJobs.ph was added to the scope on
+// request, even though it doesn't have LinkedIn's relevance-drift problem
+// — a broad OnlineJobs.ph search (e.g. "wordpress") can still turn up
+// postings whose title only mentions it in passing, so the same
+// title-must-match-a-keyword safety net is still useful there.
+const TITLE_FILTER_SITE_IDS = new Set(["linkedin", "onlinejobsph"]);
+const DEFAULT_TITLE_FILTER_KEYWORDS = [
+  "full stack",
+  "full-stack",
+  "fullstack",
+  "software engineer",
+  "software developer",
+  "web developer",
+  "web development",
+  "app developer",
+  "application developer",
+  "developer",
+  "engineer",
+  "engineering",
+  "frontend",
+  "front-end",
+  "front end",
+  "backend",
+  "back-end",
+  "back end",
+  "ai automation",
+  "automation engineer",
+  "ai engineer",
+  "machine learning",
+  "wordpress",
+  "elementor",
+  "php",
+];
+
+// Seeds sensible defaults on first run (no stored value at all), but
+// respects a user's explicit empty list — clearing every keyword means
+// "stop filtering," not "fall back to the defaults." Array.isArray is what
+// tells those two cases apart: an object with no `keywords` field at all
+// (never configured) vs. one with `keywords: []` (deliberately cleared).
+function normalizeTitleFilter(raw) {
+  const enabled = typeof raw?.enabled === "boolean" ? raw.enabled : true;
+  const keywords = Array.isArray(raw?.keywords)
+    ? raw.keywords.filter((k) => typeof k === "string" && k.trim().length > 0)
+    : DEFAULT_TITLE_FILTER_KEYWORDS;
+  return { enabled, keywords };
+}
+
+// Case-insensitive substring match, OR'd across every configured keyword.
+// An empty keyword list always matches everything (fail open) — this is
+// the one place that behavior is enforced, so every caller gets it for
+// free regardless of how the empty-list state was reached.
+function jobTitleMatchesFilter(title, keywords) {
+  if (!Array.isArray(keywords) || keywords.length === 0) return true;
+  const t = (title || "").toLowerCase();
+  return keywords.some((k) => t.includes(String(k).toLowerCase()));
+}
+
+// One-time-per-entry self-heal, same pattern as cleanStoredFeedTitle above:
+// a watch's stored url was normalized (via its site's normalizeUrl) once,
+// at the moment it was added — so a rule added to normalizeUrl AFTER a
+// watch already exists (e.g. LinkedIn's sortBy=DD "most recent" fix, added
+// to stop old-but-relevant postings from crowding out brand-new ones) never
+// reaches that already-saved watch on its own. Re-running normalizeUrl on
+// every read and persisting the result when it changes means an existing
+// watch picks up new normalization rules the moment this version loads,
+// with no need to delete and re-add it.
+function migrateWatchUrls(watches) {
+  let changed = false;
+  const migrated = watches.map((w) => {
+    const site = SITES[w.siteId];
+    if (!site?.normalizeUrl) return w;
+    let normalized;
+    try {
+      normalized = site.normalizeUrl(w.url);
+    } catch {
+      return w;
+    }
+    if (normalized === w.url) return w;
+    changed = true;
+    return { ...w, url: normalized };
+  });
+  return { migrated, changed };
+}
+
 async function getSettings() {
-  const { watches, intervalMinutes, soundId, notificationsMuted } = await chrome.storage.sync.get([
+  const { watches, intervalMinutes, soundId, notificationsMuted, titleFilter } = await chrome.storage.sync.get([
     "watches",
     "intervalMinutes",
     "soundId",
     "notificationsMuted",
+    "titleFilter",
   ]);
+  const { migrated: migratedWatches, changed } = migrateWatchUrls(watches && watches.length ? watches : [defaultWatch()]);
+  if (changed) {
+    // Fire-and-forget persist — no need to make the caller wait on this.
+    chrome.storage.sync.set({ watches: migratedWatches }).catch((err) =>
+      console.error("[job-alert] failed to persist migrated watch urls", err)
+    );
+  }
   return {
-    watches: watches && watches.length ? watches : [defaultWatch()],
+    watches: migratedWatches,
     intervalMinutes: intervalMinutes || 5,
     soundId: soundId || "chime",
     // Muting still checks and updates the feed/badge as normal — it only
     // skips the OS notification popup and alert tone, e.g. for quiet hours.
     notificationsMuted: Boolean(notificationsMuted),
+    titleFilter: normalizeTitleFilter(titleFilter),
   };
 }
 
@@ -152,6 +310,20 @@ async function saveRunState(partial) {
   await chrome.storage.local.set(partial);
 }
 
+// The extension's own installed version (always current, straight from
+// manifest.json — never a second place to remember to keep in sync), plus
+// a one-time "you just got updated" marker set by onInstalled above when
+// Chrome reports this load replaced an older version. justUpdated is
+// cleared by the "ack-update" message once the popup has shown it, so it's
+// null on every subsequent open until the next actual update.
+async function getVersionInfo() {
+  const { justUpdated } = await chrome.storage.local.get(["justUpdated"]);
+  return {
+    current: chrome.runtime.getManifest().version,
+    justUpdated: justUpdated || null,
+  };
+}
+
 // ---------- offscreen document (DOM parsing + sound for the service worker) ----------
 
 let creatingOffscreen; // guards against concurrent createDocument calls
@@ -205,6 +377,89 @@ async function playAlertSound(soundId) {
 
 // ---------- fetch + diff one watch ----------
 
+// Resolves once tabId finishes loading (status "complete"), or after
+// timeoutMs, whichever comes first — never rejects, since a slow/oddly-
+// behaving page shouldn't block a check indefinitely; the caller just
+// scans whatever's there once this returns.
+function waitForTabLoad(tabId, timeoutMs = 15000) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      chrome.tabs.onUpdated.removeListener(listener);
+      clearTimeout(timer);
+      resolve();
+    };
+    const listener = (updatedTabId, changeInfo) => {
+      if (updatedTabId === tabId && changeInfo.status === "complete") finish();
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    const timer = setTimeout(finish, timeoutMs);
+  });
+}
+
+// Reported bug this fixes: LinkedIn (and, by the same architecture,
+// Glassdoor/Upwork) checks kept working right after the user manually
+// opened/refreshed the tab and hit "Check now," but periodic background
+// checks never picked up genuinely new postings on their own — the watch
+// just looked permanently stuck. Root cause: content-linkedin.js (and its
+// Glassdoor/Upwork siblings) read whatever's CURRENTLY rendered in the
+// tab's live DOM — that's the whole point of the content-script approach,
+// since these sites can't be fetched fresh in the background. But nothing
+// was ever telling that open tab to actually re-fetch its results. A tab
+// left sitting on the search page keeps showing the exact same list it
+// loaded once and never updates on its own (LinkedIn's client-side app
+// doesn't silently re-poll its own results), so every periodic check was
+// re-scanning an increasingly stale snapshot — it could never see a
+// posting that appeared after the tab was last loaded. Only a manual
+// reload (which is effectively what "open the link" does right before
+// "check now") ever produced a fresh result.
+// Fix: navigate the tab back to the watch's own canonical, saved (already
+// site.normalizeUrl-normalized) search url and wait for it to finish
+// loading before asking its content script to rescan, so every check —
+// scheduled or manual — reads an actually-current page instead of whatever
+// was there whenever the tab happened to last load. This runs before EVERY
+// scan, not just the first, which also matches this project's own existing
+// note elsewhere that a freshly-loaded tab is what keeps these sites from
+// flagging the check as bot activity in the first place.
+//
+// Deliberately navigates to targetUrl rather than just calling
+// chrome.tabs.reload(tabId): a plain reload only re-fetches whatever url
+// the tab has already drifted onto — which, for LinkedIn, is exactly the
+// problem reported after the first version of this fix shipped: a tab left
+// open long enough drifts (via LinkedIn's own client-side routing) onto a
+// url carrying a stale sort/job-focus state, so reloading it in place kept
+// re-reading the same relevance-sorted, weeks-old-postings-included page
+// forever. Explicitly navigating back to the watch's canonical url on every
+// single check self-heals that drift each time — including picking up
+// normalizeLinkedInUrl's sortBy=DD ("most recent") rule for a watch that
+// was added before that rule existed (see migrateWatchUrls above for the
+// matching storage-side migration).
+async function refreshTabBeforeScan(tabId, targetUrl) {
+  try {
+    if (targetUrl) {
+      await chrome.tabs.update(tabId, { url: targetUrl });
+    } else {
+      await chrome.tabs.reload(tabId);
+    }
+  } catch {
+    // Tab may have closed/navigated away between being found and reloaded
+    // — let the subsequent sendMessage below fail on its own and report
+    // its own clear "lost the connection" error rather than duplicating
+    // that handling here.
+    return;
+  }
+  await waitForTabLoad(tabId);
+  // "complete" fires once the page's own resources have loaded, but these
+  // sites' actual job list is populated a moment later by client-side JS
+  // on top of that — a short fixed buffer is a simple, good-enough way to
+  // let that finish without needing to know each site's exact render
+  // timing (mirrors how offscreen.js already waits after DOMContentLoaded
+  // for OnlineJobs.ph's own client rendering, elsewhere in this project).
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+}
+
 // Sites whose fetchMode is "content-script" (Glassdoor, LinkedIn, Upwork)
 // can't be checked with a background fetch() — either because the page
 // needs JS to render (never fully solved here) or, in Glassdoor's and
@@ -213,7 +468,10 @@ async function playAlertSound(soundId) {
 // clears it. Instead we ping an actual open tab on that site and ask its
 // content script (content-glassdoor.js, content-linkedin.js, or
 // content-upwork.js, injected there via manifest content_scripts) to read
-// whatever is currently in its DOM.
+// whatever is currently in its DOM — after first reloading that tab (see
+// refreshTabBeforeScan above) so "currently in its DOM" actually means
+// something current, not just whatever was there from whenever the tab
+// happened to last load.
 async function fetchJobsViaTab(watch, site) {
   // Prefer a tab that's open to this exact saved search.
   const exactTabs = await chrome.tabs.query({ url: watch.url });
@@ -248,6 +506,16 @@ async function fetchJobsViaTab(watch, site) {
       `No open ${site.name} tab found for this search. ${site.name} needs a live${signedInPhrase} tab open — background checking gets blocked by its bot protection. Use the "Open Link ↗" button below to open it in a tab and leave it there.`
     );
   }
+
+  // Navigate the tab back to this watch's own canonical, saved search url
+  // and wait for it to finish loading before scanning its DOM — see
+  // refreshTabBeforeScan's own comment for why this (rather than a plain
+  // in-place reload) is what's required for real-time detection on
+  // content-script sites. Best-effort: if the navigation itself fails
+  // (e.g. the tab was closed a moment ago), fall through to sendMessage
+  // anyway, which will surface its own clear "lost the connection" error
+  // below rather than silently swallowing it.
+  await refreshTabBeforeScan(tab.id, watch.url);
 
   let response;
   try {
@@ -290,8 +558,14 @@ async function fetchJobs(watch) {
 // classic lost-update race). Returning plain data instead lets
 // runAllChecks merge every watch's outcome into one in-memory state object
 // and persist it with a single write per cycle, so nothing gets clobbered.
-async function checkWatch(watch, { isFirstRun, previousIds }) {
-  const jobs = await fetchJobs(watch);
+async function checkWatch(watch, { isFirstRun, previousIds, titleFilter }) {
+  let jobs = await fetchJobs(watch);
+
+  // See TITLE_FILTER_SITE_IDS above for which sites this applies to and why.
+  if (TITLE_FILTER_SITE_IDS.has(watch.siteId) && titleFilter?.enabled) {
+    jobs = jobs.filter((j) => jobTitleMatchesFilter(j.title, titleFilter.keywords));
+  }
+
   const currentIds = jobs.map((j) => j.id);
 
   // Establish a baseline on the very first check for this watch so we
@@ -319,7 +593,7 @@ async function checkWatch(watch, { isFirstRun, previousIds }) {
 // "catching up" notice in the popup instead of just looking like nothing
 // happened.
 async function runAllChecks({ lateByMs = 0 } = {}) {
-  const { watches, soundId, notificationsMuted } = await getSettings();
+  const { watches, soundId, notificationsMuted, titleFilter } = await getSettings();
   // Single read for the whole cycle — every watch's outcome below gets
   // merged into this same in-memory object, then it's written back once.
   const state = await getRunState();
@@ -332,7 +606,7 @@ async function runAllChecks({ lateByMs = 0 } = {}) {
         const isFirstRun = !(watch.id in state.seenIds);
         const previousIds = new Set(state.seenIds[watch.id] || []);
         try {
-          const { newJobs, currentIds, result } = await checkWatch(watch, { isFirstRun, previousIds });
+          const { newJobs, currentIds, result } = await checkWatch(watch, { isFirstRun, previousIds, titleFilter });
           return { watch, newJobs, currentIds, result, error: null };
         } catch (err) {
           return {
@@ -368,7 +642,42 @@ async function runAllChecks({ lateByMs = 0 } = {}) {
   state.lastGap = lateByMs > LATE_THRESHOLD_MS ? { lateByMs, at: now } : null;
   state.lastRunAt = now;
 
-  const withNewJobs = results.filter((r) => r.newJobs.length > 0);
+  // Cross-watch dedup: the exact same real-world posting can legitimately
+  // match more than one of the user's own watches — e.g. a "Job Automation
+  // Specialist" watch and a separate "Software Engineer" watch both
+  // matching one actual posting titled "Software Engineer - Automation."
+  // Each watch's own seenIds tracking (above) has no idea the OTHER watch
+  // already surfaced this same job, so without this step it would show up
+  // as two separate "new" feed entries/notifications for what is, to the
+  // user, one single listing from one hirer.
+  //
+  // sourceKey (the site + that site's own stable per-posting id, e.g.
+  // LinkedIn's numeric /jobs/view/<id>, Glassdoor's jl= id) — NOT watch.id
+  // — is what identifies "the same job" here, since two different watches
+  // finding the identical posting is exactly the case being collapsed.
+  // Crucially, this only merges genuine repeats: two DIFFERENT companies
+  // both posting a job titled "Software Engineer" get two different
+  // sourceKeys (each site assigns its own id per posting, per hirer), so
+  // they correctly stay as separate entries — "5 different companies
+  // hiring for the same title" is never treated as a duplicate.
+  //
+  // existingSourceKeys also checks the already-persisted feed (not just
+  // this cycle), so a job one watch surfaced in an earlier check doesn't
+  // get re-added a second time later just because a different watch's
+  // search only started matching it afterward.
+  const existingSourceKeys = new Set(state.feed.map((e) => e.sourceKey).filter(Boolean));
+  const claimedThisCycle = new Set();
+  const withNewJobs = [];
+  for (const r of results) {
+    if (r.newJobs.length === 0) continue;
+    const dedupedJobs = r.newJobs.filter((j) => {
+      const sourceKey = `${r.watch.siteId}:${j.id}`;
+      if (existingSourceKeys.has(sourceKey) || claimedThisCycle.has(sourceKey)) return false;
+      claimedThisCycle.add(sourceKey);
+      return true;
+    });
+    if (dedupedJobs.length > 0) withNewJobs.push({ ...r, newJobs: dedupedJobs });
+  }
   if (withNewJobs.length > 0) {
     // Muted just means "don't pop a desktop notification or play a sound
     // right now" — the feed and badge below still update normally either
@@ -382,6 +691,16 @@ async function runAllChecks({ lateByMs = 0 } = {}) {
     const newFeedEntries = withNewJobs.flatMap(({ watch, newJobs }) =>
       newJobs.map((j) => ({
         id: `${watch.id}:${j.id}`,
+        // The site + that site's own stable per-posting id — see the big
+        // comment above existingSourceKeys for why this (not watch.id) is
+        // what identifies "the same job" across different watches, both
+        // within one check cycle and across every future one.
+        sourceKey: `${watch.siteId}:${j.id}`,
+        // Stored directly (not re-derived from the URL later) so the
+        // per-platform feed cap below has an authoritative, always-correct
+        // answer to "which platform is this" even if a URL ever turned out
+        // to be ambiguous.
+        siteId: watch.siteId,
         watchId: watch.id,
         watchLabel: watch.label,
         title: j.title,
@@ -390,13 +709,33 @@ async function runAllChecks({ lateByMs = 0 } = {}) {
         postedAt: j.postedAt || null,
         postedApprox: j.postedApprox || false,
         salaryRaw: j.salaryRaw || null,
+        // Only ever set true by LinkedIn's adapter — every other site's
+        // extractJobs() simply never includes this field, so `|| false`
+        // here also naturally covers "not LinkedIn," not just "LinkedIn
+        // but not Easy Apply."
+        easyApply: Boolean(j.easyApply),
+        // Only ever set (to "Remote"/"Hybrid"/"On-site") by LinkedIn's and
+        // Glassdoor's adapters — OnlineJobs.ph's and Upwork's extractJobs()
+        // never include this field, so `|| null` here also naturally
+        // covers those two sites.
+        workplaceType: j.workplaceType || null,
         detectedAt: now,
         visited: false,
+        // "Applied" is a separate, user-driven flag from "visited" — visited
+        // just means the title was clicked/opened; applied means the user
+        // told the popup they actually submitted an application for this
+        // one (see the "toggle-applied" message handler below). Kept right
+        // on the feed entry (storage.local, not exported/imported settings)
+        // for the same reason "visited" already is: it's per-device run
+        // state, not something you'd want silently overwritten by an
+        // Import.
+        applied: false,
+        appliedAt: null,
       }))
     );
 
     const totalNew = newFeedEntries.length;
-    state.feed = [...newFeedEntries, ...state.feed].slice(0, FEED_LIMIT);
+    state.feed = trimFeedPerPlatform([...newFeedEntries, ...state.feed]);
     state.badgeCount = (state.badgeCount || 0) + totalNew;
   }
 
@@ -427,6 +766,7 @@ async function resetExtension() {
     intervalMinutes: 5,
     soundId: "chime",
     notificationsMuted: false,
+    titleFilter: normalizeTitleFilter(null),
   });
   await saveRunState({ seenIds: {}, lastChecked: {}, lastResult: {}, badgeCount: 0, feed: [], consecutiveErrors: {}, lastRunAt: null, lastGap: null });
   await updateBadge(0);
@@ -474,7 +814,14 @@ async function importSettings(data) {
   const soundId = typeof data.soundId === "string" ? data.soundId : "chime";
   const notificationsMuted = Boolean(data.notificationsMuted);
 
-  await saveSettings({ watches: importedWatches, intervalMinutes, soundId, notificationsMuted });
+  const settingsToSave = { watches: importedWatches, intervalMinutes, soundId, notificationsMuted };
+  // Only touch the title filter if the imported file actually has one — an
+  // older backup (from before this feature existed) shouldn't silently wipe
+  // out a filter the user has since configured.
+  if (data.titleFilter) {
+    settingsToSave.titleFilter = normalizeTitleFilter(data.titleFilter);
+  }
+  await saveSettings(settingsToSave);
   // The imported watches are new to this browser's run-state even if they
   // existed before (possibly on another machine) — reset run-state so they
   // establish a fresh baseline instead of either replaying old seenIds
@@ -624,10 +971,28 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
 });
 
-chrome.runtime.onInstalled.addListener(async () => {
+chrome.runtime.onInstalled.addListener(async (details) => {
   const { watches, intervalMinutes, soundId, notificationsMuted } = await getSettings();
   await saveSettings({ watches, intervalMinutes, soundId, notificationsMuted });
   await scheduleAlarm();
+
+  // Chrome's own reliable signal that this load is a reload of an EXISTING
+  // install onto a different manifest version — not the popup guessing by
+  // comparing version strings itself (which it can't do on its own anyway,
+  // since it only ever sees "whatever's running right now"). Recorded here
+  // so the popup can show a one-time "Updated to vX.Y.Z" banner the next
+  // time it's opened, directly answering "how do I know it actually
+  // updated" without the user having to dig into Settings and remember
+  // what the old version number was. See the "ack-update" message handler
+  // below for how this gets cleared so it only shows once.
+  if (details.reason === "update") {
+    await chrome.storage.local.set({
+      justUpdated: {
+        toVersion: chrome.runtime.getManifest().version,
+        fromVersion: details.previousVersion || null,
+      },
+    });
+  }
 });
 
 chrome.runtime.onStartup.addListener(async () => {
@@ -652,7 +1017,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         await ensureAlarmScheduled();
         const settings = await getSettings();
         const runState = await getRunState();
-        sendResponse({ settings, runState });
+        const version = await getVersionInfo();
+        sendResponse({ settings, runState, version });
         break;
       }
       case "check-now": {
@@ -660,7 +1026,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         await runAllChecks();
         const settings = await getSettings();
         const runState = await getRunState();
-        sendResponse({ settings, runState });
+        const version = await getVersionInfo();
+        sendResponse({ settings, runState, version });
+        break;
+      }
+      case "ack-update": {
+        // Popup calls this right after showing the one-time "Updated to
+        // vX.Y.Z" banner, so it doesn't show again on every subsequent open
+        // until the NEXT actual version bump re-sets justUpdated via
+        // onInstalled above.
+        await chrome.storage.local.remove("justUpdated");
+        sendResponse({ ok: true });
         break;
       }
       case "add-watch": {
@@ -762,6 +1138,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ ok: true });
         break;
       }
+      case "toggle-applied": {
+        // A toggle rather than separate mark/unmark messages, so a misclick
+        // is a single click to undo — same request either way, popup.js
+        // just reads the flipped state back off the response.
+        const state = await getRunState();
+        const entry = state.feed.find((f) => f.id === message.id);
+        if (!entry) {
+          sendResponse({ ok: false, error: "Feed entry not found." });
+          break;
+        }
+        entry.applied = !entry.applied;
+        entry.appliedAt = entry.applied ? Date.now() : null;
+        await saveRunState({ feed: state.feed });
+        sendResponse({ ok: true, applied: entry.applied, appliedAt: entry.appliedAt });
+        break;
+      }
       case "pause-all": {
         const settings = await getSettings();
         setAllWatchesEnabled(settings.watches, false);
@@ -786,6 +1178,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case "set-notifications-muted": {
         await saveSettings({ notificationsMuted: Boolean(message.muted) });
         sendResponse({ ok: true });
+        break;
+      }
+      case "update-title-filter": {
+        // popup.js sends the whole replacement {enabled, keywords} object
+        // (it keeps its own working copy for add/remove/toggle) rather
+        // than piecemeal add/remove messages — one code path here,
+        // normalized the same way getSettings()/importSettings() already
+        // normalize it.
+        const titleFilter = normalizeTitleFilter(message.titleFilter);
+        await saveSettings({ titleFilter });
+        sendResponse({ ok: true, titleFilter });
         break;
       }
       case "reset-extension": {

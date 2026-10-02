@@ -15,6 +15,10 @@
       <button id="settings-toggle" class="icon-btn" title="Settings" aria-label="Open settings">⚙</button>
     </header>
 
+    <div id="update-banner" class="update-banner" hidden>
+      <span id="update-banner-text"></span>
+    </div>
+
     <section id="settings-panel" class="settings-panel">
       <div class="settings-panel-header">
         <h2>Settings</h2>
@@ -56,6 +60,32 @@
         </p>
       </div>
 
+      <div id="settings-title-filter-section" class="settings-group">
+        <label class="settings-toggle-row">
+          <input type="checkbox" id="title-filter-enabled" />
+          <span>Filter out unrelated LinkedIn / OnlineJobs.ph postings by keyword</span>
+        </label>
+        <p class="hint">
+          LinkedIn's search isn't a strict match — it can pad results with
+          "recommended for you" jobs, especially now that watches sort by
+          "Most recent" instead of "Most relevant." OnlineJobs.ph's broad
+          searches can also turn up postings that only mention your keyword
+          in passing. When this is on, a posting from either site only
+          reaches your feed if its title contains at least one keyword
+          below. This isn't tied to any specific field — add or remove
+          keywords for whatever you're searching for.
+        </p>
+        <div id="title-filter-keywords" class="keyword-chip-list"></div>
+        <div class="keyword-filter-add-row">
+          <input
+            id="title-filter-new-keyword"
+            type="text"
+            placeholder="Add a keyword or phrase…"
+          />
+          <button id="title-filter-add-btn" class="secondary">Add</button>
+        </div>
+      </div>
+
       <div class="settings-group">
         <div class="settings-row-actions settings-row-actions--start">
           <button id="export-settings" class="secondary">Export…</button>
@@ -80,6 +110,10 @@
       </div>
 
       <div id="settings-status-msg" class="settings-status"></div>
+
+      <div class="settings-group settings-group--about">
+        <p class="hint" id="about-version"></p>
+      </div>
     </section>
 
     <section class="controls">
@@ -137,7 +171,7 @@
 
     <section class="feed-section">
       <div class="feed-header">
-        <h2>New postings found</h2>
+        <h2>New postings found <span id="feed-applied-count" class="feed-applied-count"></span></h2>
         <div class="feed-header-actions">
           <button id="mark-all-visited" class="secondary">Mark all read</button>
           <button id="clear-feed" class="secondary danger-hover">Clear</button>
@@ -153,6 +187,17 @@
         />
         <select id="feed-platform-filter" class="feed-platform-filter">
           <option value="all">All platforms</option>
+        </select>
+        <select id="feed-workplace-filter" class="feed-workplace-filter">
+          <option value="all">Onsite/Hybrid/Remote: all</option>
+          <option value="Remote">Remote</option>
+          <option value="Hybrid">Hybrid</option>
+          <option value="On-site">On-site</option>
+        </select>
+        <select id="feed-status-filter" class="feed-status-filter">
+          <option value="all">Applied: all</option>
+          <option value="not-applied">Not applied yet</option>
+          <option value="applied">Applied</option>
         </select>
         <select id="feed-sort" class="feed-sort">
           <option value="found-desc">Newest found first</option>

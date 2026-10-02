@@ -87,6 +87,88 @@
   const SALARY_RE =
     /\$\s?\d[\d,]*(?:\.\d{1,2})?\s?[KkMm]?(?:\s?\/\s?(?:hr|hour|yr|year|mo|month))?(?:\s?(?:-|–|—|to)\s?\$?\s?\d[\d,]*(?:\.\d{1,2})?\s?[KkMm]?(?:\s?\/\s?(?:hr|hour|yr|year|mo|month))?)?/i;
 
+  // Used both by findLinkedInEasyApply() to detect the label, and by
+  // extractJobsFromLiveDocument() to strip it back out of a title when a
+  // card wraps its whole contents in one anchor — same "whole card is one
+  // anchor" concern SALARY_RE and postedRaw handle.
+  const EASY_APPLY_RE = /\beasy apply\b/i;
+
+  // LinkedIn and Glassdoor both flag each posting's workplace arrangement —
+  // On-site, Remote, or Hybrid. Two different real-world shapes this can
+  // take on the page, so both are checked (see findWorkplaceType below):
+  //   1. Its own isolated label/pill, separate from the location — the
+  //      element's ENTIRE trimmed text is just the one word.
+  //   2. Appended to the location line in parentheses, e.g. a metadata row
+  //      reading "San Francisco, CA (Remote)" or "New York, NY (Hybrid)" —
+  //      confirmed to be the more common shape on both sites' current job
+  //      search pages.
+  // Neither is a plain substring test anywhere in the container (like
+  // EASY_APPLY_RE) specifically because "remote" and "hybrid" are common
+  // English words that can legitimately appear inside a job title or
+  // description (e.g. "Remote Support Engineer," "Hybrid Cloud
+  // Architect") — a bare substring match would false-positive constantly.
+  // Shape 1 requires an isolated leaf element to match exactly; shape 2
+  // requires the word to appear specifically inside parentheses, which a
+  // real title is never going to coincidentally do right after a
+  // location-shaped string.
+  const WORKPLACE_TYPE_RE = /^(remote|hybrid|on-site|onsite)$/i;
+  const WORKPLACE_TYPE_PAREN_RE = /\((remote|hybrid|on-site|onsite)\)/i;
+
+  // Looks for a small "leaf" element (no element children of its own)
+  // whose ENTIRE trimmed text matches — see the matching helper + comment
+  // in sites.js for the full rationale (kept there rather than duplicated
+  // here). Requiring the whole element's text to match avoids false
+  // positives from a bigger blob of concatenated card text.
+  function findLeafMatch(container, regex) {
+    const all = container.querySelectorAll("*");
+    for (const el of all) {
+      if (el.children.length > 0) continue;
+      const text = (el.textContent || "").trim();
+      if (text && regex.test(text)) return text;
+    }
+    return null;
+  }
+
+  // Normalizes whatever casing/hyphenation LinkedIn used ("Onsite",
+  // "On-site", "ON-SITE", etc.) to one consistent label for storage/display.
+  function normalizeWorkplaceType(rawLabel) {
+    const key = rawLabel.trim().toLowerCase().replace(/-/g, "");
+    if (key === "remote") return "Remote";
+    if (key === "hybrid") return "Hybrid";
+    if (key === "onsite") return "On-site";
+    return null;
+  }
+
+  // Tries the isolated-leaf exact match first (shape 1), then falls back to
+  // a leaf containing "(<word>)" (shape 2) — see the comment above
+  // WORKPLACE_TYPE_RE/WORKPLACE_TYPE_PAREN_RE. Returns null (not a guessed
+  // default) when neither pattern is found anywhere in the container.
+  // Returns { raw, normalized }: `raw` is the EXACT substring to strip back
+  // out of a title later (e.g. "(Remote)" including the parentheses for
+  // shape 2, or just "Remote" for shape 1) — cleanTitle's stripping is an
+  // exact literal match, so it needs the real on-page text, not the
+  // normalized label.
+  function findWorkplaceType(container) {
+    if (!container) return null;
+    const exact = findLeafMatch(container, WORKPLACE_TYPE_RE);
+    if (exact) {
+      const normalized = normalizeWorkplaceType(exact);
+      if (normalized) return { raw: exact, normalized };
+    }
+    const leaves = container.querySelectorAll("*");
+    for (const el of leaves) {
+      if (el.children.length > 0) continue;
+      const text = (el.textContent || "").trim();
+      if (!text || text.length > 80) continue;
+      const match = text.match(WORKPLACE_TYPE_PAREN_RE);
+      if (match) {
+        const normalized = normalizeWorkplaceType(match[1]);
+        if (normalized) return { raw: match[0], normalized };
+      }
+    }
+    return null;
+  }
+
   function findSalaryText(container) {
     if (!container) return null;
     // Same script/style/noscript-stripping precaution as visibleBodyText()
@@ -111,6 +193,38 @@
   function findLinkedInSalary(anchor) {
     const container = scopedJobContainer(anchor, (a) => /\/jobs\/view\//.test(a.getAttribute("href") || ""));
     return findSalaryText(container);
+  }
+
+  // LinkedIn flags postings that support its own one-click "Easy Apply"
+  // flow (applies without leaving LinkedIn / redirecting to the employer's
+  // site) with a distinct "Easy Apply" label inside the job card, alongside
+  // the posted-time and salary info. Not verified against a live example —
+  // same caveat as looksLikeBlockPage below — so this is a best-effort text
+  // check rather than a specific selector, which is also more resilient to
+  // LinkedIn's markup changing than a class name would be. Scopes to the
+  // same job container postedTime/salary use, and strips
+  // script/style/noscript first for the same reason findSalaryText does:
+  // LinkedIn embeds page config as inline JSON that could otherwise produce
+  // a false positive from an unrelated internal field name.
+  // Returns false (not null) when it can't confirm — unlike a missing
+  // salary/date, "can't confirm Easy Apply" and "genuinely isn't Easy
+  // Apply" should look the same to the user: no badge.
+  function findLinkedInEasyApply(anchor) {
+    const container = scopedJobContainer(anchor, (a) => /\/jobs\/view\//.test(a.getAttribute("href") || ""));
+    if (!container) return false;
+    const clone = container.cloneNode(true);
+    clone.querySelectorAll("script, style, noscript").forEach((el) => el.remove());
+    return EASY_APPLY_RE.test(clone.textContent || "");
+  }
+
+  // Best-effort workplace-type extraction ("Remote" / "Hybrid" / "On-site")
+  // — see the long comment above findWorkplaceType for the two shapes this
+  // tries, in order, and why. Returns null (not a guessed default) when the
+  // card doesn't show one at all — same as postedRaw/salaryRaw already do
+  // for their own "not shown" cases.
+  function findLinkedInWorkplaceType(anchor) {
+    const container = scopedJobContainer(anchor, (a) => /\/jobs\/view\//.test(a.getAttribute("href") || ""));
+    return findWorkplaceType(container);
   }
 
   // Some cards render the ENTIRE card — title, posted label, salary pill —
@@ -191,9 +305,21 @@
       const postedRaw = posted?.label || null;
       const postedApprox = Boolean(postedAt);
       const salaryRaw = findLinkedInSalary(a);
-      const title = cleanTitle(rawTitle, postedRaw, salaryRaw);
+      const easyApply = findLinkedInEasyApply(a);
+      const workplace = findLinkedInWorkplaceType(a);
+      const workplaceType = workplace?.normalized || null;
+      // Strips workplace.raw (the exact text as it appeared), not
+      // workplaceType — see the comment above findLinkedInWorkplaceType for
+      // why.
+      const title = cleanTitle(
+        rawTitle,
+        postedRaw,
+        salaryRaw,
+        easyApply ? EASY_APPLY_RE : null,
+        workplace?.raw || null
+      );
 
-      jobs.push({ id: jobId, title, url: absoluteUrl, postedRaw, postedAt, postedApprox, salaryRaw });
+      jobs.push({ id: jobId, title, url: absoluteUrl, postedRaw, postedAt, postedApprox, salaryRaw, easyApply, workplaceType });
     }
 
     if (jobs.length === 0 && looksLikeBlockPage()) {

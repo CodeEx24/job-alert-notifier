@@ -89,6 +89,72 @@
   const SALARY_RE =
     /\$\s?\d[\d,]*(?:\.\d{1,2})?\s?[KkMm]?(?:\s?\/\s?(?:hr|hour|yr|year|mo|month))?(?:\s?(?:-|–|—|to)\s?\$?\s?\d[\d,]*(?:\.\d{1,2})?\s?[KkMm]?(?:\s?\/\s?(?:hr|hour|yr|year|mo|month))?)?/i;
 
+  // Used both by findGlassdoorEasyApply() to detect the label, and by
+  // extractJobsFromLiveDocument() to strip it back out of a title when a
+  // card wraps its whole contents in one anchor — same "whole card is one
+  // anchor" concern SALARY_RE and postedRaw handle.
+  const EASY_APPLY_RE = /\beasy apply\b/i;
+
+  // Glassdoor flags each posting's workplace arrangement — On-site, Remote,
+  // or Hybrid. Two different real-world shapes this can take on the page,
+  // so both are checked (see findWorkplaceType below):
+  //   1. Its own isolated label/pill, separate from the location — the
+  //      element's ENTIRE trimmed text is just the one word.
+  //   2. Appended to the location line in parentheses, e.g. a metadata row
+  //      reading "San Francisco, CA (Remote)" or "New York, NY (Hybrid)" —
+  //      confirmed to be the more common shape on both this site's and
+  //      LinkedIn's current job search pages.
+  // Neither is a plain substring test anywhere in the container (like
+  // EASY_APPLY_RE) specifically because "remote" and "hybrid" are common
+  // English words that can legitimately appear inside a job title or
+  // description — a bare substring match would false-positive constantly.
+  // Shape 1 requires an isolated leaf element to match exactly; shape 2
+  // requires the word to appear specifically inside parentheses, which a
+  // real title is never going to coincidentally do right after a
+  // location-shaped string.
+  const WORKPLACE_TYPE_RE = /^(remote|hybrid|on-site|onsite)$/i;
+  const WORKPLACE_TYPE_PAREN_RE = /\((remote|hybrid|on-site|onsite)\)/i;
+
+  // Normalizes whatever casing/hyphenation Glassdoor used ("Onsite",
+  // "On-site", "ON-SITE", etc.) to one consistent label for storage/display.
+  function normalizeWorkplaceType(rawLabel) {
+    const key = rawLabel.trim().toLowerCase().replace(/-/g, "");
+    if (key === "remote") return "Remote";
+    if (key === "hybrid") return "Hybrid";
+    if (key === "onsite") return "On-site";
+    return null;
+  }
+
+  // Tries the isolated-leaf exact match first (shape 1), then falls back to
+  // a leaf containing "(<word>)" (shape 2) — see the comment above
+  // WORKPLACE_TYPE_RE/WORKPLACE_TYPE_PAREN_RE. Returns null (not a guessed
+  // default) when neither pattern is found anywhere in the container.
+  // Returns { raw, normalized }: `raw` is the EXACT substring to strip back
+  // out of a title later (e.g. "(Remote)" including the parentheses for
+  // shape 2, or just "Remote" for shape 1) — cleanTitle's stripping is an
+  // exact literal match, so it needs the real on-page text, not the
+  // normalized label.
+  function findWorkplaceType(container) {
+    if (!container) return null;
+    const exact = findLeafMatch(container, WORKPLACE_TYPE_RE);
+    if (exact) {
+      const normalized = normalizeWorkplaceType(exact);
+      if (normalized) return { raw: exact, normalized };
+    }
+    const leaves = container.querySelectorAll("*");
+    for (const el of leaves) {
+      if (el.children.length > 0) continue;
+      const text = (el.textContent || "").trim();
+      if (!text || text.length > 80) continue;
+      const match = text.match(WORKPLACE_TYPE_PAREN_RE);
+      if (match) {
+        const normalized = normalizeWorkplaceType(match[1]);
+        if (normalized) return { raw: match[0], normalized };
+      }
+    }
+    return null;
+  }
+
   function findSalaryText(container) {
     if (!container) return null;
     // Same script/style/noscript-stripping precaution as visibleBodyText()
@@ -115,6 +181,34 @@
       /\/job-listing\//.test(a.getAttribute("href") || "")
     );
     return findSalaryText(container);
+  }
+
+  // Glassdoor flags some postings with its own "Easy Apply" label, same
+  // concept as LinkedIn's — see the matching comment + helper in
+  // content-linkedin.js for the full rationale (kept there rather than
+  // duplicated here): best-effort text match rather than a specific
+  // selector, scoped to the same job container, script/style/noscript
+  // stripped first, and false (not null) when it can't confirm.
+  function findGlassdoorEasyApply(anchor) {
+    const container = scopedJobContainer(anchor, (a) =>
+      /\/job-listing\//.test(a.getAttribute("href") || "")
+    );
+    if (!container) return false;
+    const clone = container.cloneNode(true);
+    clone.querySelectorAll("script, style, noscript").forEach((el) => el.remove());
+    return EASY_APPLY_RE.test(clone.textContent || "");
+  }
+
+  // Best-effort workplace-type extraction ("Remote" / "Hybrid" / "On-site")
+  // — see the long comment above findWorkplaceType for the two shapes this
+  // tries, in order, and why. Returns null (not a guessed default) when the
+  // card doesn't show one at all — same as postedRaw/salaryRaw already do
+  // for their own "not shown" cases.
+  function findGlassdoorWorkplaceType(anchor) {
+    const container = scopedJobContainer(anchor, (a) =>
+      /\/job-listing\//.test(a.getAttribute("href") || "")
+    );
+    return findWorkplaceType(container);
   }
 
   // Some Glassdoor cards render the ENTIRE card — title, freshness label,
@@ -189,9 +283,18 @@
       const postedRaw = parsed ? parsed.label : null;
       const postedApprox = parsed ? parsed.approx : false;
       const salaryRaw = findGlassdoorSalary(a);
-      const title = cleanTitle(rawTitle, label, salaryRaw);
+      const easyApply = findGlassdoorEasyApply(a);
+      const workplace = findGlassdoorWorkplaceType(a);
+      const workplaceType = workplace?.normalized || null;
+      const title = cleanTitle(
+        rawTitle,
+        label,
+        salaryRaw,
+        easyApply ? EASY_APPLY_RE : null,
+        workplace?.raw || null
+      );
 
-      jobs.push({ id: jobId, title, url: absoluteUrl, postedRaw, postedAt, postedApprox, salaryRaw });
+      jobs.push({ id: jobId, title, url: absoluteUrl, postedRaw, postedAt, postedApprox, salaryRaw, easyApply, workplaceType });
     }
 
     if (jobs.length === 0 && looksLikeBlockPage()) {

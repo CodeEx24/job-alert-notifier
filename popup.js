@@ -170,6 +170,8 @@ const FEED_PAGE_SIZE = 10;
 let feedPage = 0; // 0-indexed
 let feedSearch = "";
 let feedPlatformFilter = "all";
+let feedWorkplaceFilter = "all"; // "all" | "Remote" | "Hybrid" | "On-site"
+let feedStatusFilter = "all"; // "all" | "applied" | "not-applied"
 let feedSort = "found-desc";
 
 // Feed search/filter/sort are plain in-memory variables, which is fine
@@ -192,6 +194,8 @@ async function loadFeedFilters() {
     if (!feedFilters) return;
     if (typeof feedFilters.search === "string") feedSearch = feedFilters.search;
     if (typeof feedFilters.platform === "string") feedPlatformFilter = feedFilters.platform;
+    if (typeof feedFilters.workplace === "string") feedWorkplaceFilter = feedFilters.workplace;
+    if (typeof feedFilters.status === "string") feedStatusFilter = feedFilters.status;
     if (typeof feedFilters.sort === "string") feedSort = feedFilters.sort;
   } catch {
     // Best-effort — worst case the popup just falls back to no filters,
@@ -201,7 +205,15 @@ async function loadFeedFilters() {
 
 function persistFeedFilters() {
   chrome.storage.local
-    .set({ feedFilters: { search: feedSearch, platform: feedPlatformFilter, sort: feedSort } })
+    .set({
+      feedFilters: {
+        search: feedSearch,
+        platform: feedPlatformFilter,
+        workplace: feedWorkplaceFilter,
+        status: feedStatusFilter,
+        sort: feedSort,
+      },
+    })
     .catch(() => {});
 }
 
@@ -843,13 +855,26 @@ function appendClearFiltersLink(container) {
   btn.addEventListener("click", () => {
     feedSearch = "";
     feedPlatformFilter = "all";
+    feedWorkplaceFilter = "all";
+    feedStatusFilter = "all";
     const searchInput = document.getElementById("feed-search");
     if (searchInput) searchInput.value = "";
+    const workplaceSelect = document.getElementById("feed-workplace-filter");
+    if (workplaceSelect) workplaceSelect.value = feedWorkplaceFilter;
+    const statusSelect = document.getElementById("feed-status-filter");
+    if (statusSelect) statusSelect.value = feedStatusFilter;
     feedPage = 0;
     persistFeedFilters();
     renderFeed(lastState.runState);
   });
   container.appendChild(btn);
+}
+
+function renderAppliedCount(allFeed) {
+  const el = document.getElementById("feed-applied-count");
+  if (!el) return;
+  const appliedCount = allFeed.filter((e) => e.applied).length;
+  el.textContent = appliedCount > 0 ? `· ${appliedCount} applied` : "";
 }
 
 function renderFeed(runState) {
@@ -860,6 +885,7 @@ function renderFeed(runState) {
   summaryEl.innerHTML = "";
 
   populateFeedPlatformOptions(allFeed);
+  renderAppliedCount(allFeed);
 
   if (allFeed.length === 0) {
     const empty = document.createElement("p");
@@ -880,9 +906,25 @@ function renderFeed(runState) {
   if (feedPlatformFilter !== "all") {
     feed = feed.filter((e) => getFeedPlatform(e) === feedPlatformFilter);
   }
+  if (feedWorkplaceFilter !== "all") {
+    // OnlineJobs.ph (and Upwork) never report a workplace type at all — see
+    // background.js: only LinkedIn's and Glassdoor's extractJobs() ever set
+    // this field. Filtering those platforms out whenever a specific
+    // workplace type is picked would read as "OnlineJobs.ph has no remote
+    // jobs," which isn't true, it's just not classified. So a posting with
+    // no workplaceType always passes this filter regardless of which type
+    // is selected — only a posting that HAS a type gets held to matching it.
+    feed = feed.filter((e) => e.workplaceType == null || e.workplaceType === feedWorkplaceFilter);
+  }
+  if (feedStatusFilter === "applied") {
+    feed = feed.filter((e) => e.applied);
+  } else if (feedStatusFilter === "not-applied") {
+    feed = feed.filter((e) => !e.applied);
+  }
   feed = sortFeedEntries(feed, feedSort);
 
-  const hasFilters = Boolean(query) || feedPlatformFilter !== "all";
+  const hasFilters =
+    Boolean(query) || feedPlatformFilter !== "all" || feedWorkplaceFilter !== "all" || feedStatusFilter !== "all";
 
   if (feed.length === 0) {
     const empty = document.createElement("p");
@@ -938,6 +980,56 @@ function renderFeed(runState) {
       top.appendChild(salaryPill);
     }
 
+    // LinkedIn-only — every other site's entries simply never have this
+    // field set, so nothing extra is needed here to keep it off their cards.
+    if (entry.easyApply) {
+      const easyApplyPill = document.createElement("span");
+      easyApplyPill.className = "easy-apply-pill";
+      easyApplyPill.textContent = "Easy Apply";
+      easyApplyPill.title = "This posting supports LinkedIn's one-click Easy Apply";
+      top.appendChild(easyApplyPill);
+    }
+
+    // LinkedIn and Glassdoor only — "Remote"/"Hybrid"/"On-site" as shown on
+    // the listing itself. A distinct color per value (see popup.css's
+    // .workplace-pill--* rules) so the three read apart from each other at
+    // a glance, not just apart from salary/Easy Apply.
+    if (entry.workplaceType) {
+      const workplacePill = document.createElement("span");
+      const modifier = entry.workplaceType.toLowerCase().replace(/[^a-z]/g, "");
+      workplacePill.className = `workplace-pill workplace-pill--${modifier}`;
+      workplacePill.textContent = entry.workplaceType;
+      workplacePill.title = `Workplace type as shown on the listing: ${entry.workplaceType}`;
+      top.appendChild(workplacePill);
+    }
+
+    // A toggle, not a one-way "mark applied" action — misclicks (or applying
+    // somewhere and then hearing back it fell through) need an easy undo,
+    // and a single button that flips state is simpler than separate
+    // apply/unapply controls for what's really one piece of state.
+    const appliedBtn = document.createElement("button");
+    appliedBtn.type = "button";
+    appliedBtn.className = "applied-btn";
+    top.appendChild(appliedBtn);
+    updateAppliedButton(appliedBtn, entry);
+
+    appliedBtn.addEventListener("click", async () => {
+      appliedBtn.disabled = true;
+      try {
+        const result = await send({ type: "toggle-applied", id: entry.id });
+        if (result?.ok) {
+          entry.applied = result.applied; // same object reference as lastState.runState.feed[i]
+          entry.appliedAt = result.appliedAt;
+          updateAppliedButton(appliedBtn, entry);
+          renderAppliedCount(lastState.runState.feed || []);
+        }
+      } catch {
+        // Best-effort — leave the button as it was if the message failed.
+      } finally {
+        appliedBtn.disabled = false;
+      }
+    });
+
     const badge = document.createElement("span");
     top.appendChild(badge);
     updateFeedBadge(badge, entry);
@@ -970,6 +1062,18 @@ function updateFeedBadge(badge, entry) {
   } else {
     badge.className = "badge badge--new";
     badge.textContent = "New";
+  }
+}
+
+function updateAppliedButton(btn, entry) {
+  if (entry.applied) {
+    btn.className = "applied-btn is-applied";
+    btn.textContent = "✓ Applied";
+    btn.title = entry.appliedAt ? `Marked applied ${fmtTime(entry.appliedAt)} — click to undo` : "Click to undo";
+  } else {
+    btn.className = "applied-btn";
+    btn.textContent = "Mark applied";
+    btn.title = "Click once you've applied to this posting";
   }
 }
 
@@ -1067,14 +1171,87 @@ function renderSettingsPerSite(settings) {
   }
 }
 
+// Renders the configurable LinkedIn/OnlineJobs.ph title-keyword filter: the
+// enabled toggle plus one removable chip per keyword. See background.js's
+// TITLE_FILTER_SITE_IDS / normalizeTitleFilter / jobTitleMatchesFilter for
+// what this actually does to the feed.
+function renderTitleFilter(titleFilter) {
+  document.getElementById("title-filter-enabled").checked = Boolean(titleFilter?.enabled);
+
+  const container = document.getElementById("title-filter-keywords");
+  container.innerHTML = "";
+  const keywords = titleFilter?.keywords || [];
+
+  if (keywords.length === 0) {
+    const empty = document.createElement("span");
+    empty.className = "keyword-chip-empty";
+    empty.textContent = "No keywords yet — every LinkedIn/OnlineJobs.ph posting will pass through unfiltered.";
+    container.appendChild(empty);
+    return;
+  }
+
+  for (const keyword of keywords) {
+    const chip = document.createElement("span");
+    chip.className = "keyword-chip";
+
+    const label = document.createElement("span");
+    label.textContent = keyword;
+    chip.appendChild(label);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "keyword-chip-remove";
+    removeBtn.textContent = "✕";
+    removeBtn.title = `Remove "${keyword}"`;
+    removeBtn.dataset.keyword = keyword;
+    chip.appendChild(removeBtn);
+
+    container.appendChild(chip);
+  }
+}
+
 function renderSettingsPanel(settings) {
   renderSettingsPerSite(settings);
   document.getElementById("mute-notifications").checked = Boolean(settings.notificationsMuted);
+  renderTitleFilter(settings.titleFilter);
 
   const anyActive = settings.watches.some((w) => w.enabled);
   const anyPaused = settings.watches.some((w) => !w.enabled);
   document.getElementById("pause-all").disabled = !anyActive;
   document.getElementById("resume-all").disabled = !anyPaused;
+}
+
+// Shows the installed version in Settings (always, so it's checkable any
+// time), and — the more direct answer to "how do I know it actually
+// updated" — a one-time "Updated to vX.Y.Z" banner right after a real
+// version change, driven by background.js's onInstalled handler rather
+// than the popup trying to guess by comparing version strings itself
+// (which it can't reliably do anyway, since a freshly-opened popup only
+// ever sees "whatever's running right now," not what was running before).
+// Acks the update (via "ack-update") as soon as it's shown, so it doesn't
+// keep reappearing on every later open.
+let updateBannerAcked = false; // guards against re-showing it if renderAll() re-runs (e.g. "Check now") before the storage-side ack lands
+
+function renderVersionInfo(version) {
+  if (!version) return;
+
+  const aboutEl = document.getElementById("about-version");
+  if (aboutEl) aboutEl.textContent = `Job Alert Notifier v${version.current}`;
+
+  const banner = document.getElementById("update-banner");
+  const bannerText = document.getElementById("update-banner-text");
+  if (!banner || !bannerText || !version.justUpdated || updateBannerAcked) return;
+  updateBannerAcked = true;
+
+  const { toVersion, fromVersion } = version.justUpdated;
+  bannerText.textContent = fromVersion
+    ? `✓ Updated to v${toVersion} (from v${fromVersion})`
+    : `✓ Updated to v${toVersion}`;
+  banner.hidden = false;
+  send({ type: "ack-update" }).catch(() => {});
+  setTimeout(() => {
+    banner.hidden = true;
+  }, 8000);
 }
 
 function renderAll() {
@@ -1084,6 +1261,7 @@ function renderAll() {
   syncControls(lastState.settings);
   renderSettingsPanel(lastState.settings);
   renderCheckStatus().catch(() => {});
+  renderVersionInfo(lastState.version);
 }
 
 async function refresh() {
@@ -1174,6 +1352,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (feedSearchInput) feedSearchInput.value = feedSearch;
   const feedSortSelect = document.getElementById("feed-sort");
   if (feedSortSelect) feedSortSelect.value = feedSort;
+  const feedWorkplaceSelect = document.getElementById("feed-workplace-filter");
+  if (feedWorkplaceSelect) feedWorkplaceSelect.value = feedWorkplaceFilter;
+  const feedStatusSelect = document.getElementById("feed-status-filter");
+  if (feedStatusSelect) feedStatusSelect.value = feedStatusFilter;
   // feed-platform-filter's <select> is rebuilt from the feed's actual
   // contents every render (see populateFeedPlatformOptions), which already
   // sets its value from feedPlatformFilter each time — nothing extra needed
@@ -1222,6 +1404,66 @@ document.addEventListener("DOMContentLoaded", async () => {
     await send({ type: "set-notifications-muted", muted: e.target.checked });
   });
 
+  // --- Title-keyword filter (Settings) ---
+  //
+  // Always sends the FULL replacement {enabled, keywords} object (reading
+  // the current value off lastState.settings.titleFilter), rather than
+  // separate add/remove/toggle messages — a fast double-click adding then
+  // removing a keyword could otherwise race against itself. See
+  // background.js's "update-title-filter" handler.
+  document.getElementById("title-filter-enabled").addEventListener("change", async (e) => {
+    const current = lastState?.settings?.titleFilter || { enabled: true, keywords: [] };
+    const result = await send({
+      type: "update-title-filter",
+      titleFilter: { enabled: e.target.checked, keywords: current.keywords },
+    });
+    if (result?.ok && lastState) lastState.settings.titleFilter = result.titleFilter;
+  });
+
+  document.getElementById("title-filter-keywords").addEventListener("click", async (e) => {
+    const removeBtn = e.target.closest(".keyword-chip-remove");
+    if (!removeBtn) return;
+    const keyword = removeBtn.dataset.keyword;
+    const current = lastState?.settings?.titleFilter || { enabled: true, keywords: [] };
+    const nextKeywords = current.keywords.filter((k) => k !== keyword);
+    const result = await send({
+      type: "update-title-filter",
+      titleFilter: { enabled: current.enabled, keywords: nextKeywords },
+    });
+    if (result?.ok && lastState) {
+      lastState.settings.titleFilter = result.titleFilter;
+      renderTitleFilter(result.titleFilter);
+    }
+  });
+
+  const addTitleFilterKeyword = async () => {
+    const input = document.getElementById("title-filter-new-keyword");
+    const value = input.value.trim();
+    if (!value) return;
+    const current = lastState?.settings?.titleFilter || { enabled: true, keywords: [] };
+    if (current.keywords.some((k) => k.toLowerCase() === value.toLowerCase())) {
+      input.value = "";
+      return; // already there — nothing to add
+    }
+    const nextKeywords = [...current.keywords, value];
+    const result = await send({
+      type: "update-title-filter",
+      titleFilter: { enabled: current.enabled, keywords: nextKeywords },
+    });
+    if (result?.ok && lastState) {
+      lastState.settings.titleFilter = result.titleFilter;
+      renderTitleFilter(result.titleFilter);
+      input.value = "";
+    }
+  };
+  document.getElementById("title-filter-add-btn").addEventListener("click", addTitleFilterKeyword);
+  document.getElementById("title-filter-new-keyword").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addTitleFilterKeyword();
+    }
+  });
+
   const settingsStatusMsg = document.getElementById("settings-status-msg");
   const showSettingsStatus = (text, kind) => {
     settingsStatusMsg.textContent = text;
@@ -1236,6 +1478,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       intervalMinutes: settings.intervalMinutes,
       soundId: settings.soundId,
       notificationsMuted: Boolean(settings.notificationsMuted),
+      titleFilter: settings.titleFilter,
       exportedAt: new Date().toISOString(),
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
@@ -1290,10 +1533,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     // postings after a reset.
     feedSearch = "";
     feedPlatformFilter = "all";
+    feedWorkplaceFilter = "all";
+    feedStatusFilter = "all";
     feedSort = "found-desc";
     feedPage = 0;
     const searchInput = document.getElementById("feed-search");
     if (searchInput) searchInput.value = "";
+    const workplaceSelect = document.getElementById("feed-workplace-filter");
+    if (workplaceSelect) workplaceSelect.value = feedWorkplaceFilter;
+    const statusSelect = document.getElementById("feed-status-filter");
+    if (statusSelect) statusSelect.value = feedStatusFilter;
     const sortSelect = document.getElementById("feed-sort");
     if (sortSelect) sortSelect.value = feedSort;
     persistFeedFilters();
@@ -1364,6 +1613,20 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("feed-platform-filter").addEventListener("change", (e) => {
     feedPlatformFilter = e.target.value;
+    feedPage = 0;
+    persistFeedFilters();
+    if (lastState) renderFeed(lastState.runState);
+  });
+
+  document.getElementById("feed-workplace-filter").addEventListener("change", (e) => {
+    feedWorkplaceFilter = e.target.value;
+    feedPage = 0;
+    persistFeedFilters();
+    if (lastState) renderFeed(lastState.runState);
+  });
+
+  document.getElementById("feed-status-filter").addEventListener("change", (e) => {
+    feedStatusFilter = e.target.value;
     feedPage = 0;
     persistFeedFilters();
     if (lastState) renderFeed(lastState.runState);

@@ -22,6 +22,14 @@
   --visited-text: #16a34a;
   --warning: #b45309;
   --warning-bg: #fef3c7;
+  --linkedin-badge-bg: #e7f0fb;
+  --linkedin-badge-text: #0a66c2;
+  --remote-bg: #ccfbf1;
+  --remote-text: #0f766e;
+  --hybrid-bg: #ffedd5;
+  --hybrid-text: #c2410c;
+  --onsite-bg: #e2e8f0;
+  --onsite-text: #334155;
   --radius: 10px;
   --radius-sm: 7px;
   --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
@@ -54,6 +62,14 @@
     --visited-text: #4ade80;
     --warning: #fbbf24;
     --warning-bg: #3f2d05;
+    --linkedin-badge-bg: #1a2f47;
+    --linkedin-badge-text: #6ab0f3;
+    --remote-bg: #0f3d3a;
+    --remote-text: #5eead4;
+    --hybrid-bg: #4a2c0f;
+    --hybrid-text: #fdba74;
+    --onsite-bg: #334155;
+    --onsite-text: #cbd5e1;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 2px 10px rgba(0, 0, 0, 0.35);
   }
@@ -106,6 +122,27 @@ h1 {
 header .tagline {
   font-size: 10.5px;
   color: var(--text-muted);
+}
+
+/* Shown once, right after a version update — see background.js's
+   onInstalled handler (details.reason === "update") and popup.js's
+   renderVersionInfo(). Mirrors the success-green already used elsewhere for
+   a positive/confirmation state. */
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  margin: -4px 0 12px;
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  font-weight: 600;
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.update-banner[hidden] {
+  display: none;
 }
 
 .icon-btn {
@@ -834,6 +871,15 @@ button.is-busy {
   margin: 0 0 8px;
 }
 
+.settings-group--about {
+  text-align: center;
+}
+
+.settings-group--about .hint {
+  margin: 0;
+  color: var(--text-faint);
+}
+
 .add-watch,
 .feed-section {
   margin-top: 14px;
@@ -862,18 +908,21 @@ button.is-busy {
 
 .feed-controls {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
 }
 
 .feed-search {
-  flex: 2;
+  flex: 2 1 100%;
   min-width: 0;
 }
 
 .feed-platform-filter,
+.feed-workplace-filter,
+.feed-status-filter,
 .feed-sort {
-  flex: 1;
+  flex: 1 1 0;
   min-width: 0;
   font-size: 12px;
 }
@@ -971,10 +1020,167 @@ button.is-busy {
   color: var(--success-text);
 }
 
+/* LinkedIn-only — mirrors .salary-pill's shape but in LinkedIn's own blue
+   rather than the green used for salary, so the two read as distinct
+   categories of info at a glance rather than both looking like "salary." */
+.easy-apply-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  background: var(--linkedin-badge-bg);
+  color: var(--linkedin-badge-text);
+}
+
+/* LinkedIn-only, same shape as .salary-pill/.easy-apply-pill — a distinct
+   color per workplace type (set via the --remote/--hybrid/--onsite-* vars)
+   so "Remote," "Hybrid," and "On-site" read apart from each other at a
+   glance, not just apart from salary/Easy Apply. */
+.workplace-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.workplace-pill--remote {
+  background: var(--remote-bg);
+  color: var(--remote-text);
+}
+
+.workplace-pill--hybrid {
+  background: var(--hybrid-bg);
+  color: var(--hybrid-text);
+}
+
+.workplace-pill--onsite {
+  background: var(--onsite-bg);
+  color: var(--onsite-text);
+}
+
 .feed-item .feed-meta {
   color: var(--text-muted);
   font-size: 11px;
   margin-top: 3px;
+}
+
+/* "Mark applied" toggle — a small outlined button by default (so it doesn't
+   compete visually with the salary/Easy Apply/workplace pills, which are
+   read-only facts about the listing rather than something you click), that
+   fills in with the same green used for salary once toggled on, so an
+   applied card reads as "handled" at a glance while scrolling past it. */
+.applied-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.applied-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  border-color: var(--accent-soft);
+}
+
+.applied-btn.is-applied {
+  background: var(--success-bg);
+  color: var(--success-text);
+  border-color: var(--success-bg);
+}
+
+.applied-btn.is-applied:hover {
+  opacity: 0.85;
+}
+
+.feed-applied-count {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* Settings' configurable title-keyword filter — one removable chip per
+   keyword/phrase, same shape language as the feed's own pills so it reads
+   as "the same kind of thing" even though it lives in a different part of
+   the popup. */
+.keyword-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.keyword-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 6px 3px 9px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  white-space: nowrap;
+}
+
+.keyword-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+  opacity: 0.75;
+}
+
+.keyword-chip-remove:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.keyword-chip-empty {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.keyword-filter-add-row {
+  display: flex;
+  gap: 6px;
+}
+
+.keyword-filter-add-row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.keyword-filter-add-row button {
+  flex-shrink: 0;
 }
 
 .pagination {

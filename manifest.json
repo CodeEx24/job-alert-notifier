@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Job Alert Notifier",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Get a desktop popup the moment a new job posting matching your search appears on OnlineJobs.ph, Glassdoor, LinkedIn, or Upwork.",
   "permissions": ["storage", "alarms", "notifications", "offscreen"],
   "host_permissions": [
