@@ -355,6 +355,27 @@ function looksLikeGlassdoorBlockPage(doc) {
   ].some((phrase) => text.includes(phrase));
 }
 
+// --- Which site a URL belongs to ---------------------------------------
+//
+// A URL is a site's only when its hostname is the site's domain itself or a
+// dot-separated subdomain of it: `linkedin.com` and `ph.linkedin.com`, never
+// `notlinkedin.com` (a plain endsWith() matched that too) and never
+// `linkedin.com.evil.example`. `new URL()` has already lower-cased the
+// hostname. A trailing dot (`linkedin.com.`) is not matched. WatchDesk's
+// `lib/sites.ts` applies the same rule; tests/site-host-cases.json is the
+// table both are tested against.
+function isHostInDomain(hostname, domain) {
+  return hostname === domain || hostname.endsWith(`.${domain}`);
+}
+
+function urlIsInDomain(url, domain) {
+  try {
+    return isHostInDomain(new URL(url).hostname, domain);
+  } catch {
+    return false;
+  }
+}
+
 // --- LinkedIn helpers --------------------------------------------------
 //
 // LinkedIn actually serves TWO different job-search page shapes depending
@@ -380,7 +401,7 @@ function normalizeLinkedInUrl(rawUrl) {
   } catch {
     return rawUrl;
   }
-  if (!u.hostname.endsWith("linkedin.com")) return rawUrl;
+  if (!isHostInDomain(u.hostname, "linkedin.com")) return rawUrl;
 
   u.pathname = u.pathname.replace(/\/jobs\/search-results\/?/, "/jobs/search/");
   if (!u.pathname.startsWith("/jobs/search")) {
@@ -632,13 +653,7 @@ export const SITES = {
     name: "OnlineJobs.ph",
     // Any URL under this host can be a "watch" target (job search results
     // page with whatever filters the user applied).
-    hostMatch: (url) => {
-      try {
-        return new URL(url).hostname.endsWith("onlinejobs.ph");
-      } catch {
-        return false;
-      }
-    },
+    hostMatch: (url) => urlIsInDomain(url, "onlinejobs.ph"),
     defaultUrl: "https://www.onlinejobs.ph/jobseekers/jobsearch",
     fetchMode: "background", // plain background fetch() works
     // Pull job postings out of a parsed HTML Document.
@@ -681,13 +696,7 @@ export const SITES = {
   glassdoor: {
     id: "glassdoor",
     name: "Glassdoor",
-    hostMatch: (url) => {
-      try {
-        return new URL(url).hostname.endsWith("glassdoor.com");
-      } catch {
-        return false;
-      }
-    },
+    hostMatch: (url) => urlIsInDomain(url, "glassdoor.com"),
     // A broad "remote jobs" search as a reasonable default; the user will
     // normally replace this by pasting their own filtered search URL.
     defaultUrl:
@@ -771,13 +780,7 @@ export const SITES = {
   linkedin: {
     id: "linkedin",
     name: "LinkedIn",
-    hostMatch: (url) => {
-      try {
-        return new URL(url).hostname.endsWith("linkedin.com");
-      } catch {
-        return false;
-      }
-    },
+    hostMatch: (url) => urlIsInDomain(url, "linkedin.com"),
     defaultUrl: "https://www.linkedin.com/jobs/search/?f_TPR=r86400",
     // Confirmed live: LinkedIn's job search page is genuinely JS-rendered —
     // a background fetch() of the URL returns a shell containing only the
@@ -862,13 +865,7 @@ export const SITES = {
   upwork: {
     id: "upwork",
     name: "Upwork",
-    hostMatch: (url) => {
-      try {
-        return new URL(url).hostname.endsWith("upwork.com");
-      } catch {
-        return false;
-      }
-    },
+    hostMatch: (url) => urlIsInDomain(url, "upwork.com"),
     // Sorted "Newest" rather than the default "Relevance" — a much better
     // fit for a new-postings alert; the user will normally replace this by
     // pasting their own filtered search URL anyway.
