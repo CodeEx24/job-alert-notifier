@@ -1,0 +1,63 @@
+[
+  {
+    "url": "https://www.onlinejobs.ph/jobseekers/jobsearch",
+    "site": "onlinejobsph"
+  },
+  {
+    "url": "https://onlinejobs.ph/jobseekers/jobsearch",
+    "site": "onlinejobsph"
+  },
+  {
+    "url": "https://v2.onlinejobs.ph/jobseekers/jobsearch",
+    "site": "onlinejobsph"
+  },
+  {
+    "url": "https://www.glassdoor.com/Job/remote-jobs-SRCH_IL.0,6_IS11047.htm",
+    "site": "glassdoor"
+  },
+  {
+    "url": "https://glassdoor.com/Job/remote-jobs-SRCH_IL.0,6_IS11047.htm",
+    "site": "glassdoor"
+  },
+  { "url": "HTTPS://WWW.GLASSDOOR.COM/Job/x.htm", "site": "glassdoor" },
+  {
+    "url": "https://www.linkedin.com/jobs/search/?f_TPR=r86400",
+    "site": "linkedin"
+  },
+  { "url": "https://linkedin.com/", "site": "linkedin" },
+  {
+    "url": "https://ph.linkedin.com/jobs/search/?keywords=qa",
+    "site": "linkedin"
+  },
+  { "url": "https://WWW.LinkedIn.com/jobs/search/", "site": "linkedin" },
+  { "url": "https://www.linkedin.com:443/jobs/search/", "site": "linkedin" },
+  {
+    "url": "https://www.upwork.com/nx/search/jobs/?sort=recency",
+    "site": "upwork"
+  },
+  { "url": "https://upwork.com/nx/search/jobs/", "site": "upwork" },
+  { "url": "http://www.upwork.com/nx/search/jobs/", "site": "upwork" },
+
+  { "url": "https://notlinkedin.com/jobs/search/", "site": null },
+  { "url": "https://www.notlinkedin.com/jobs/search/", "site": null },
+  { "url": "https://linkedin.com.evil.example/jobs/search/", "site": null },
+  { "url": "https://myonlinejobs.ph/jobseekers/jobsearch", "site": null },
+  {
+    "url": "https://onlinejobs.ph.evil.example/jobseekers/jobsearch",
+    "site": null
+  },
+  { "url": "https://fakeglassdoor.com/Job/x.htm", "site": null },
+  { "url": "https://glassdoor.com.evil.example/Job/x.htm", "site": null },
+  { "url": "https://notupwork.com/nx/search/jobs/", "site": null },
+  { "url": "https://upwork.com.evil.example/nx/search/jobs/", "site": null },
+  { "url": "https://linkedin.com@evil.example/jobs/search/", "site": null },
+  { "url": "https://linkedin.com./jobs/search/", "site": null },
+  { "url": "https://www.glassdoor.co.uk/Job/x.htm", "site": null },
+  { "url": "https://www.glassdoor.com.au/Job/x.htm", "site": null },
+  { "url": "https://example.com/linkedin.com", "site": null },
+  { "url": "https://example.com/?u=upwork.com", "site": null },
+  { "url": "https://www.indeed.com/jobs?q=qa", "site": null },
+  { "url": "www.linkedin.com/jobs/search/", "site": null },
+  { "url": "linkedin jobs", "site": null },
+  { "url": "", "site": null }
+]
