@@ -424,12 +424,42 @@ describe("the connected state", () => {
     expect(env.chrome.storage.local.dump()[mod.ACCOUNT_KEY]).toBeUndefined();
   });
 
-  it("keeps the token and the last known account when WatchDesk cannot be reached", async () => {
+  it("keeps the token and the last known account when WatchDesk cannot be reached, after retrying", async () => {
     await mod.refreshAccount();
     api.setCurrent(api.networkError);
-    const state = await mod.refreshAccount();
+    const pending = mod.refreshAccount();
+    await advance(60000);
+    const state = await pending;
     expect(state).toMatchObject({ status: "connected", email: "ada@example.com", accountCheckFailed: true });
     expect(env.chrome.storage.local.dump()[mod.TOKEN_KEY]).toBe(TEST_TOKEN);
+    // One successful refresh, then the first try and three retries.
+    expect(api.requests.filter((r) => r.path === "/api/devices/current")).toHaveLength(1 + 4);
+  });
+
+  it("keeps the token through a 5xx and connects again once WatchDesk answers", async () => {
+    api.setCurrent(() => api.json(503, {}));
+    const pending = mod.refreshAccount();
+    await advance(60000);
+    expect(await pending).toMatchObject({ status: "connected", accountCheckFailed: true });
+    expect(env.chrome.storage.local.dump()[mod.TOKEN_KEY]).toBe(TEST_TOKEN);
+
+    api.setCurrent(() =>
+      api.json(200, { account: { email: "ada@example.com", displayName: "Ada" }, device: { id: "d", label: "L" } }),
+    );
+    expect(await mod.refreshAccount()).toMatchObject({ status: "connected", email: "ada@example.com" });
+  });
+
+  it("sends the token as a Bearer header", async () => {
+    await mod.refreshAccount();
+    const current = api.requests.find((r) => r.path === "/api/devices/current");
+    expect(current.headers).toEqual({ Authorization: `Bearer ${TEST_TOKEN}` });
+    expect(current.credentials).toBe("omit");
+  });
+
+  it("does not call WatchDesk when not connected", async () => {
+    await env.chrome.storage.local.remove(mod.TOKEN_KEY);
+    expect(await mod.refreshAccount()).toEqual({ status: "not-connected", outcome: null });
+    expect(api.requests).toHaveLength(0);
   });
 
   it("does not start a pairing while connected", async () => {
@@ -437,6 +467,55 @@ describe("the connected state", () => {
     expect(state.status).toBe("connected");
     expect(api.requests.filter((r) => r.path === "/api/auth/device/start")).toHaveLength(0);
     expect(env.chrome.tabs.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("losing the connection (a 401 on any authenticated call)", () => {
+  beforeEach(async () => {
+    await env.chrome.storage.local.set({
+      [mod.TOKEN_KEY]: TEST_TOKEN,
+      [mod.ACCOUNT_KEY]: { email: "ada@example.com", displayName: "Ada", deviceLabel: "L" },
+    });
+    api.setCurrent(() => api.json(401, { error: "Sign in to continue." }));
+  });
+
+  it("tells an open popup it is not connected any more, without the token", async () => {
+    env.chrome.runtime.sendMessage.mockResolvedValue(undefined);
+    await mod.refreshAccount();
+    expect(env.chrome.runtime.sendMessage).toHaveBeenCalledTimes(1);
+    const [message] = env.chrome.runtime.sendMessage.mock.calls[0];
+    expect(message).toEqual({
+      type: "account-state-changed",
+      state: { status: "not-connected", outcome: { reason: "revoked" } },
+    });
+    expectNoSecrets(message);
+  });
+
+  it("does not fail when no popup is open, and the next open shows why", async () => {
+    // The mock's default: no receiving end.
+    await expect(mod.refreshAccount()).resolves.toMatchObject({ status: "not-connected" });
+    expect(await mod.getConnectionState()).toEqual({ status: "not-connected", outcome: { reason: "revoked" } });
+  });
+
+  it("keeps a token that a new pairing stored while the refused request was out", async () => {
+    api.setCurrent(async () => {
+      await env.chrome.storage.local.set({ [mod.TOKEN_KEY]: "wd_newer.token" });
+      return api.json(401, { error: "Sign in to continue." });
+    });
+    const state = await mod.refreshAccount();
+    expect(state.status).toBe("connected");
+    expect(env.chrome.storage.local.dump()[mod.TOKEN_KEY]).toBe("wd_newer.token");
+    expect(env.chrome.runtime.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("is noticed by the next authenticated call even while retries are under way", async () => {
+    // First answer a 5xx, then the device is revoked.
+    const answers = [() => api.json(503, {}), () => api.json(401, {})];
+    api.setCurrent(() => answers.shift()());
+    const pending = mod.refreshAccount();
+    await advance(5000);
+    expect(await pending).toEqual({ status: "not-connected", outcome: { reason: "revoked" } });
+    expect(api.requests.filter((r) => r.path === "/api/devices/current")).toHaveLength(2);
   });
 });
 
@@ -449,10 +528,15 @@ describe("secrets", () => {
     api.queuePoll(api.networkError, () => api.json(503, {}), api.pending, api.approved);
     await mod.startConnecting();
     await advance(30000);
+    api.setCurrent(() => api.json(503, {}));
+    const retried = mod.refreshAccount();
+    await advance(60000);
+    await retried;
     api.setCurrent(() => api.json(401, { error: "Sign in to continue." }));
     await mod.refreshAccount();
 
     expectNoSecrets(logged.map((args) => args.map(String)));
+    expectNoSecrets(env.chrome.runtime.sendMessage.mock.calls);
     expect(env.chrome.storage.sync.set).not.toHaveBeenCalled();
     expect(env.chrome.storage.sync.get).not.toHaveBeenCalled();
   });
