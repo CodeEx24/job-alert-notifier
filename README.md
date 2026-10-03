@@ -143,6 +143,28 @@ Click the **⚙** icon in the header to open the Settings panel.
   interval, chime sound). Asks for confirmation first, since it can't be
   undone — export a backup beforehand if you might want any of it again.
 
+## Connecting a WatchDesk account
+
+The card at the top of the popup links the extension to a
+[WatchDesk](https://watchdesk-rosy.vercel.app) account. Being connected
+changes nothing else yet; your watches, feed and settings stay local.
+
+1. Click **Connect Account**. A WatchDesk tab opens at
+   `/connect-extension?code=…`, showing a short code. Sign in first if asked.
+2. Check that the code matches the one in the popup, then click **Approve**.
+   The popup switches to "Connected to WatchDesk" with your account's email
+   within a few seconds, even if the popup was closed.
+3. Closing the tab before approving, clicking **Deny**, or letting the code's
+   ten minutes run out leaves the extension "Not connected", with the reason
+   shown. **Connect Account** starts again.
+
+Revoking the device on WatchDesk's profile page disconnects the extension
+the next time the popup opens.
+
+**Developers:** the WatchDesk origin is set in `config.js`. To use a local
+WatchDesk on `http://localhost:3000`, set `WATCHDESK_ENV` to `"development"`
+there and reload the extension. Tests: `npm ci && npm test` (see CLAUDE.md).
+
 ## How it works (so you can extend it)
 
 There are two ways a watch gets checked, chosen automatically per site:
