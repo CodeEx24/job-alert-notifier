@@ -146,8 +146,15 @@ Click the **⚙** icon in the header to open the Settings panel.
 ## Connecting a WatchDesk account
 
 The card at the top of the popup links the extension to a
-[WatchDesk](https://watchdesk-rosy.vercel.app) account. Being connected
-changes nothing else yet; your watches, feed and settings stay local.
+[WatchDesk](https://watchdesk-rosy.vercel.app) account. Once connected, your
+**watches** are the account's: the ones already in this browser are uploaded
+(one whose URL the account already has is not doubled), and a watch added,
+renamed, paused or removed on either side shows up on the other the next time
+the popup opens or a check runs. If WatchDesk can't be reached, the popup
+shows the last-synced list with an "Offline" line, checks keep running on
+it, and changes to the list are refused until it is back. The feed and the
+other settings stay local. Without an account nothing changes: the watches
+stay in this browser.
 
 1. Click **Connect Account**. A WatchDesk tab opens at
    `/connect-extension?code=…`, showing a short code. Sign in first if asked.

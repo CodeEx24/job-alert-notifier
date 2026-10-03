@@ -17,6 +17,11 @@ this file mirrors its must-follow rules.
 - **Only the service worker calls the WatchDesk API** (`watchdesk-api.js`).
   Every token-carrying call goes through `authorizedRequest()` (Bearer
   header, retries, the shared 401 handler); none builds its own.
+- **The watch list has two modes** (WD-54): not connected, it lives in
+  `chrome.storage.sync` as before; connected, WatchDesk is the truth,
+  `watches` is the last-synced copy, and every change goes through
+  `watch-sync.js` (API first, refused when unreachable). Never change what
+  an unconnected browser does.
 - **The WatchDesk origin lives only in `config.js`** (and `manifest.json`'s
   `host_permissions`).
 - **No regression in shipped behaviour:** Open All Tabs, the settings panel,

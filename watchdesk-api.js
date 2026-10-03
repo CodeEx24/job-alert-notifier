@@ -28,7 +28,8 @@
 //
 // Contracts (WatchDesk repo): POST /api/auth/device/start and
 // GET /api/auth/device/poll — docs/tickets/WD-41.md; GET
-// /api/devices/current — docs/tickets/WD-45.md.
+// /api/devices/current — docs/tickets/WD-45.md; GET and POST /api/watches,
+// PATCH and DELETE /api/watches/[id] — docs/tickets/WD-52.md.
 
 import { WATCHDESK_ORIGIN } from "./config.js";
 
@@ -45,29 +46,31 @@ function parseRetryAfter(value) {
 }
 
 // Returns { status, body, retryAfterSeconds }. A network failure, a timeout
-// or a refused connection is status 0 with a null body.
-export async function requestJson(path, { method = "GET", headers = {}, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+// or a refused connection is status 0 with a null body. `body`, when given,
+// is sent as JSON.
+export async function requestJson(path, { method = "GET", headers = {}, body, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(`${WATCHDESK_ORIGIN}${path}`, {
       method,
-      headers,
+      headers: body === undefined ? headers : { "Content-Type": "application/json", ...headers },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       // The extension authenticates with its own headers, never with the
       // web app's session cookie (ADR 0002 §9).
       credentials: "omit",
       cache: "no-store",
       signal: controller.signal,
     });
-    let body = null;
+    let answer = null;
     try {
-      body = await response.json();
+      answer = await response.json();
     } catch {
-      body = null;
+      answer = null;
     }
     return {
       status: response.status,
-      body,
+      body: answer,
       retryAfterSeconds: parseRetryAfter(response.headers.get("Retry-After")),
     };
   } catch {
@@ -140,7 +143,7 @@ export function configureAuth({ getToken, onUnauthorized }) {
 // a 5xx or a 429); the caller reports it and the next check cycle tries
 // again. With no token stored it sends nothing and answers 401.
 // A 401 calls onUnauthorized() before returning, and is never retried.
-export async function authorizedRequest(path, { method = "GET", headers = {}, idempotent, timeoutMs } = {}) {
+export async function authorizedRequest(path, { method = "GET", headers = {}, body, idempotent, timeoutMs } = {}) {
   const canRetry = idempotent ?? IDEMPOTENT_METHODS.has(method.toUpperCase());
   const maxAttempts = canRetry ? RETRY_POLICY.maxAttempts : 1;
 
@@ -153,6 +156,7 @@ export async function authorizedRequest(path, { method = "GET", headers = {}, id
     const response = await requestJson(path, {
       method,
       headers: { ...headers, Authorization: `Bearer ${token}` },
+      body,
       timeoutMs,
     });
     const result = { ...response, attempts: attempt };
@@ -261,4 +265,100 @@ export async function getCurrentDevice() {
       label: typeof device.label === "string" ? device.label : null,
     },
   };
+}
+
+// ---------- watches (WD-54; contract in WD-52) ----------
+//
+// A watch as the extension keeps it: { id, siteId, url, label, enabled }.
+// The server's createdAt / updatedAt are dropped: nothing here uses them.
+//
+// Every call is one attempt. The list is asked again on every check and
+// every popup open, so a retry loop here would only hold the check up; and
+// the writes come from a click in the popup, which should hear "offline" at
+// once rather than after the backoff.
+
+// How long the list may take. Shorter than the default because the job
+// check waits for it.
+const WATCH_LIST_TIMEOUT_MS = 10000;
+
+function readWatch(raw) {
+  if (!raw || typeof raw.id !== "string" || !raw.id || typeof raw.url !== "string" || !raw.url) return null;
+  return {
+    id: raw.id,
+    siteId: typeof raw.siteId === "string" && raw.siteId ? raw.siteId : null,
+    url: raw.url,
+    label: typeof raw.label === "string" && raw.label ? raw.label : raw.url,
+    enabled: raw.enabled !== false,
+  };
+}
+
+// The first message of a 400: a field error if there is one, else the
+// body's own. Both are WatchDesk's user-facing text.
+function validationMessage(body) {
+  const fieldErrors = body?.fieldErrors;
+  if (fieldErrors && typeof fieldErrors === "object") {
+    for (const field of ["url", "label", "enabled", "form"]) {
+      const first = Array.isArray(fieldErrors[field]) ? fieldErrors[field][0] : null;
+      if (typeof first === "string" && first) return first;
+    }
+  }
+  return typeof body?.error === "string" && body.error ? body.error : null;
+}
+
+// What a watch call can answer besides its own success:
+//   { kind: "unauthorized" } (authorizedRequest() has already discarded the
+//   token) | { kind: "invalid", message } (400) | { kind: "forbidden" } (403:
+//   the account's email is not verified) | { kind: "not-found" } (404: no
+//   such watch, or not this account's) | { kind: "rate-limited",
+//   retryAfterSeconds } | { kind: "unreachable" } | { kind: "error", status }
+function watchFailure(response) {
+  const failure = commonFailure(response);
+  if (failure) return failure;
+  if (response.status === 401) return { kind: "unauthorized" };
+  if (response.status === 400) return { kind: "invalid", message: validationMessage(response.body) };
+  if (response.status === 403) return { kind: "forbidden" };
+  if (response.status === 404) return { kind: "not-found" };
+  return { kind: "error", status: response.status };
+}
+
+function watchResult(response, successStatus) {
+  if (response.status !== successStatus) return watchFailure(response);
+  const watch = readWatch(response.body);
+  return watch ? { kind: "ok", watch } : { kind: "error", status: response.status };
+}
+
+// GET /api/watches → { kind: "ok", watches } (oldest first) or a failure.
+// A list holding anything that is not a watch is an error as a whole: the
+// caller removes what the list leaves out, so it must not act on a broken
+// one.
+export async function listWatches() {
+  const response = await authorizedRequest("/api/watches", { idempotent: false, timeoutMs: WATCH_LIST_TIMEOUT_MS });
+  if (response.status !== 200) return watchFailure(response);
+  const raw = response.body?.watches;
+  if (!Array.isArray(raw)) return { kind: "error", status: 200 };
+  const watches = raw.map(readWatch);
+  if (watches.includes(null)) return { kind: "error", status: 200 };
+  return { kind: "ok", watches };
+}
+
+// POST /api/watches → { kind: "ok", watch } or a failure. The server derives
+// the site from the URL and may rewrite the URL (LinkedIn).
+export async function createWatch({ url, label, enabled }) {
+  const body = { url };
+  if (label) body.label = label;
+  if (typeof enabled === "boolean") body.enabled = enabled;
+  return watchResult(await authorizedRequest("/api/watches", { method: "POST", body }), 201);
+}
+
+// PATCH /api/watches/[id] with any of { label, enabled } →
+// { kind: "ok", watch } or a failure.
+export async function updateWatch(id, patch) {
+  const response = await authorizedRequest(`/api/watches/${encodeURIComponent(id)}`, { method: "PATCH", body: patch });
+  return watchResult(response, 200);
+}
+
+// DELETE /api/watches/[id] → { kind: "ok" } or a failure.
+export async function deleteWatch(id) {
+  const response = await authorizedRequest(`/api/watches/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return response.status === 200 ? { kind: "ok" } : watchFailure(response);
 }

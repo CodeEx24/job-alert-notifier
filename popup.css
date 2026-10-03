@@ -640,6 +640,32 @@ button.is-busy {
   display: none;
 }
 
+/* Watch list vs the connected WatchDesk account (WD-54). */
+.watch-sync-status {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+
+.watch-sync-status[data-tone="offline"] {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border: 1px solid var(--warning-bg);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font-weight: 600;
+}
+
+.watch-change-error {
+  color: var(--danger);
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+
+.watch-change-error:empty {
+  display: none;
+}
+
 .watch-list {
   display: flex;
   flex-direction: column;

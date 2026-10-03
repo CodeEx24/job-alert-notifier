@@ -14,6 +14,9 @@
 //   chrome.storage.sync  -> { watches: [...], intervalMinutes, soundId }
 //     (small, user-configured settings — syncs across the user's Chrome
 //      profiles if they're signed in)
+//     With a WatchDesk account connected (WD-54), `watches` is the
+//     last-synced copy of the account's list and every change to it goes
+//     through watch-sync.js — see that file.
 //   chrome.storage.local -> { seenIds: {watchId: [ids]}, lastChecked: {},
 //                              lastResult: {}, badgeCount, feed: [...] }
 //     (larger / more frequently written run-state, kept local only)
@@ -27,6 +30,18 @@ import {
   cancelConnecting,
   refreshAccount,
 } from "./account-connection.js";
+import {
+  configureWatchSync,
+  syncWatches,
+  getWatchSyncStatus,
+  hasSyncedAccountWatches,
+  usesAccountWatches,
+  addAccountWatch,
+  updateAccountWatch,
+  setAccountWatchesEnabled,
+  removeAccountWatch,
+  forgetKnownWatches,
+} from "./watch-sync.js";
 
 const ALARM_NAME = "check-jobs";
 const OFFSCREEN_URL = "offscreen.html";
@@ -207,7 +222,12 @@ async function getSettings() {
     "notificationsMuted",
     "titleFilter",
   ]);
-  const { migrated: migratedWatches, changed } = migrateWatchUrls(watches && watches.length ? watches : [defaultWatch()]);
+  // WD-54: an empty list normally means "show the default watch", but once
+  // a connected account's list has been synced, empty means the account
+  // has no watches.
+  const storedWatches =
+    watches && watches.length ? watches : (await hasSyncedAccountWatches()) ? [] : [defaultWatch()];
+  const { migrated: migratedWatches, changed } = migrateWatchUrls(storedWatches);
   if (changed) {
     // Fire-and-forget persist — no need to make the caller wait on this.
     chrome.storage.sync.set({ watches: migratedWatches }).catch((err) =>
@@ -769,8 +789,12 @@ function setSiteWatchesEnabled(watches, siteId, enabled) {
 }
 
 async function resetExtension() {
+  // WD-54: with an account connected the watches are the account's, not
+  // this browser's, so a reset leaves them alone (it does not delete them
+  // on WatchDesk, and the next sync would bring them back anyway).
+  const keepWatches = await usesAccountWatches();
   await saveSettings({
-    watches: [defaultWatch()],
+    ...(keepWatches ? {} : { watches: [defaultWatch()] }),
     intervalMinutes: 5,
     soundId: "chime",
     notificationsMuted: false,
@@ -838,6 +862,14 @@ async function importSettings(data) {
   await saveRunState({ seenIds: {}, lastChecked: {}, lastResult: {}, badgeCount: 0, feed: [], consecutiveErrors: {}, lastRunAt: null, lastGap: null });
   await updateBadge(0);
   await scheduleAlarm();
+
+  // WD-54: with an account connected, the imported watches are added to
+  // it. Each one is matched to the account's by URL or uploaded, and the
+  // account's other watches come back into the list.
+  if (await usesAccountWatches()) {
+    await forgetKnownWatches();
+    await syncWatches();
+  }
 
   return { ok: true, imported: importedWatches.length, skipped };
 }
@@ -978,6 +1010,13 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   // is awaited only at the end, to keep the worker alive until it is done.
   // With no account connected it sends nothing.
   const accountCheck = refreshAccount().catch(() => {});
+  // WD-54: bring the watch list in step with the connected account before
+  // checking, so a watch added, paused or deleted on WatchDesk takes
+  // effect on this very check. One request with a 10 s timeout, never a
+  // retry loop, and it cannot throw; when WatchDesk is unreachable the
+  // check runs on the last-synced list. With no account connected it sends
+  // nothing.
+  await syncWatches().catch(() => {});
   try {
     await runAllChecks({ lateByMs });
   } catch (err) {
@@ -1028,6 +1067,20 @@ chrome.runtime.onStartup.addListener(async () => {
 // Must run at the top level, like the listeners above.
 registerAccountConnection();
 
+// Watch sync (WD-54): a browser that never stored a list is showing the
+// default watch, so that is what its first sync has to account for.
+configureWatchSync({ unsyncedFallback: () => [defaultWatch()] });
+
+// What the popup renders: settings, run state, version, and (WD-54) how the
+// watch list stands against the connected account.
+async function getPopupState() {
+  const settings = await getSettings();
+  const runState = await getRunState();
+  const version = await getVersionInfo();
+  const watchSync = await getWatchSyncStatus();
+  return { settings, runState, version, watchSync };
+}
+
 // ---------- messages from popup.js ----------
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -1035,19 +1088,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     switch (message?.type) {
       case "get-state": {
         await ensureAlarmScheduled();
-        const settings = await getSettings();
-        const runState = await getRunState();
-        const version = await getVersionInfo();
-        sendResponse({ settings, runState, version });
+        sendResponse(await getPopupState());
         break;
       }
       case "check-now": {
         await ensureAlarmScheduled();
+        // WD-54: same as the alarm — check the account's current list.
+        await syncWatches().catch(() => {});
         await runAllChecks();
-        const settings = await getSettings();
-        const runState = await getRunState();
-        const version = await getVersionInfo();
-        sendResponse({ settings, runState, version });
+        sendResponse(await getPopupState());
+        break;
+      }
+      case "sync-watches": {
+        // WD-54: the popup asks for this when it opens, then re-reads the
+        // state. Answers { mode: "local" } and sends nothing when no
+        // account is connected.
+        sendResponse(await syncWatches());
         break;
       }
       case "ack-update": {
@@ -1059,7 +1115,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ ok: true });
         break;
       }
+      // The watch cases below (WD-54): with a WatchDesk account connected,
+      // the change is a call to WatchDesk (watch-sync.js) and can be
+      // refused — { ok: false, error } — for example while offline. With
+      // none connected they are exactly what they were.
       case "add-watch": {
+        if (await usesAccountWatches()) {
+          sendResponse(await addAccountWatch({ url: message.url, label: message.label }));
+          break;
+        }
         const settings = await getSettings();
         const site = siteForUrl(message.url);
         // Some sites need their watch URL rewritten before it's usable —
@@ -1081,9 +1145,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         break;
       }
       case "remove-watch": {
-        const settings = await getSettings();
-        settings.watches = settings.watches.filter((w) => w.id !== message.id);
-        await saveSettings({ watches: settings.watches });
+        if (await usesAccountWatches()) {
+          const result = await removeAccountWatch(message.id);
+          if (!result.ok) {
+            sendResponse(result);
+            break;
+          }
+        } else {
+          const settings = await getSettings();
+          settings.watches = settings.watches.filter((w) => w.id !== message.id);
+          await saveSettings({ watches: settings.watches });
+        }
         const state = await getRunState();
         delete state.seenIds[message.id];
         delete state.lastChecked[message.id];
@@ -1093,6 +1165,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         break;
       }
       case "toggle-watch": {
+        if (await usesAccountWatches()) {
+          sendResponse(await updateAccountWatch(message.id, { enabled: Boolean(message.enabled) }));
+          break;
+        }
         const settings = await getSettings();
         const w = settings.watches.find((x) => x.id === message.id);
         if (w) w.enabled = message.enabled;
@@ -1104,6 +1180,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const label = (message.label || "").trim();
         if (!label) {
           sendResponse({ ok: false, error: "Title can't be empty." });
+          break;
+        }
+        if (await usesAccountWatches()) {
+          const result = await updateAccountWatch(message.id, { label });
+          sendResponse(result.ok ? { ok: true, label } : result);
           break;
         }
         const settings = await getSettings();
@@ -1175,6 +1256,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         break;
       }
       case "pause-all": {
+        if (await usesAccountWatches()) {
+          sendResponse(await setAccountWatchesEnabled(false));
+          break;
+        }
         const settings = await getSettings();
         setAllWatchesEnabled(settings.watches, false);
         await saveSettings({ watches: settings.watches });
@@ -1182,6 +1267,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         break;
       }
       case "resume-all": {
+        if (await usesAccountWatches()) {
+          sendResponse(await setAccountWatchesEnabled(true));
+          break;
+        }
         const settings = await getSettings();
         setAllWatchesEnabled(settings.watches, true);
         await saveSettings({ watches: settings.watches });
@@ -1189,6 +1278,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         break;
       }
       case "set-site-enabled": {
+        if (await usesAccountWatches()) {
+          sendResponse(await setAccountWatchesEnabled(Boolean(message.enabled), message.siteId));
+          break;
+        }
         const settings = await getSettings();
         setSiteWatchesEnabled(settings.watches, message.siteId, Boolean(message.enabled));
         await saveSettings({ watches: settings.watches });

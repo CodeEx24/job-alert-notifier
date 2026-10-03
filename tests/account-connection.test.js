@@ -462,6 +462,19 @@ describe("the connected state", () => {
     expect(api.requests).toHaveLength(0);
   });
 
+  it("isConnected says whether a token is stored, and nothing more (WD-54)", async () => {
+    expect(await mod.isConnected()).toBe(true);
+    await env.chrome.storage.local.remove(mod.TOKEN_KEY);
+    expect(await mod.isConnected()).toBe(false);
+  });
+
+  it("drops what watch sync knew about the connection along with a refused token (WD-54)", async () => {
+    await env.chrome.storage.local.set({ [mod.WATCH_SYNC_KEY]: { serverIds: ["a"], lastSyncedAt: 1 } });
+    api.setCurrent(() => api.json(401, { error: "Sign in to continue." }));
+    await mod.refreshAccount();
+    expect(env.chrome.storage.local.dump()[mod.WATCH_SYNC_KEY]).toBeUndefined();
+  });
+
   it("does not start a pairing while connected", async () => {
     const state = await mod.startConnecting();
     expect(state.status).toBe("connected");

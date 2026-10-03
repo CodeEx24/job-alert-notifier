@@ -23,6 +23,10 @@
 //     pending pairing (a fresh "Connect Account" is one click).
 //   chrome.storage.local   -> watchdeskToken   the device token (a secret)
 //                             watchdeskAccount { email, displayName, deviceLabel }
+//                             watchdeskWatchSync  what watch-sync.js knows
+//                               about this connection's watches (WD-54). It
+//                               belongs to one connection, so it is removed
+//                               here whenever a token is stored or dropped.
 //   Never chrome.storage.sync: nothing here may leave this browser.
 //
 // Keeping the polling alive in an MV3 worker: the worker is stopped after
@@ -49,6 +53,7 @@ import { startPairing, pollPairing, getCurrentDevice, configureAuth } from "./wa
 
 export const TOKEN_KEY = "watchdeskToken";
 export const ACCOUNT_KEY = "watchdeskAccount";
+export const WATCH_SYNC_KEY = "watchdeskWatchSync";
 export const PAIRING_KEY = "watchdeskPairing";
 export const OUTCOME_KEY = "watchdeskPairingOutcome";
 export const PAIRING_ALARM = "watchdesk-pairing";
@@ -78,12 +83,18 @@ async function readToken() {
   return typeof token === "string" && token ? token : null;
 }
 
+// Whether a device token is stored: all watch-sync.js needs to know to pick
+// between the account's watches and this browser's own. Never the token.
+export async function isConnected() {
+  return (await readToken()) !== null;
+}
+
 // WatchDesk refused this token (401). Drop it, unless a new pairing has
 // stored another one while the request was out, and tell the popup.
 async function discardToken(refusedToken) {
   const discarded = await withLock(async () => {
     if ((await readToken()) !== refusedToken) return false;
-    await chrome.storage.local.remove([TOKEN_KEY, ACCOUNT_KEY]);
+    await chrome.storage.local.remove([TOKEN_KEY, ACCOUNT_KEY, WATCH_SYNC_KEY]);
     await chrome.storage.session.set({ [OUTCOME_KEY]: { reason: "revoked" } });
     return true;
   });
@@ -149,7 +160,7 @@ function endPairing(code, outcome) {
 async function completePairing(token) {
   await withLock(async () => {
     await chrome.storage.local.set({ [TOKEN_KEY]: token });
-    await chrome.storage.local.remove(ACCOUNT_KEY);
+    await chrome.storage.local.remove([ACCOUNT_KEY, WATCH_SYNC_KEY]);
     await chrome.storage.session.remove([PAIRING_KEY, OUTCOME_KEY]);
     await chrome.alarms.clear(PAIRING_ALARM);
   });

@@ -32,6 +32,73 @@ export function installFakeWatchDesk({ now = () => Date.now() } = {}) {
       device: { id: "10302851-62a8-4e42-937b-593948258a48", label: "Chrome on my laptop" },
     });
 
+  // The account's watches (WD-52's routes), oldest first. A test changes
+  // this array directly to play "someone used the web app".
+  const watches = [];
+  let watchCount = 0;
+  let watchRoute = () => undefined;
+  const WATCH_SITES = {
+    "onlinejobs.ph": ["onlinejobsph", "OnlineJobs.ph"],
+    "glassdoor.com": ["glassdoor", "Glassdoor"],
+    "linkedin.com": ["linkedin", "LinkedIn"],
+    "upwork.com": ["upwork", "Upwork"],
+  };
+  const siteOf = (url) => {
+    let host;
+    try {
+      host = new URL(url).hostname;
+    } catch {
+      return null;
+    }
+    const domain = Object.keys(WATCH_SITES).find((d) => host.endsWith(d));
+    return domain ? WATCH_SITES[domain] : null;
+  };
+  const addWatch = ({ url, label, enabled = true }) => {
+    const [siteId, siteName] = siteOf(url);
+    watchCount += 1;
+    const stamp = new Date(now()).toISOString();
+    const watch = {
+      id: `00000000-0000-4000-8000-${String(watchCount).padStart(12, "0")}`,
+      siteId,
+      url,
+      label: label || siteName,
+      enabled,
+      createdAt: stamp,
+      updatedAt: stamp,
+    };
+    watches.push(watch);
+    return watch;
+  };
+  const answerWatches = (request) => {
+    const scripted = watchRoute(request);
+    if (scripted) return scripted;
+    if (!request.headers.Authorization) return json(401, { error: "Sign in to continue." });
+    const id = request.path.slice("/api/watches/".length);
+    if (request.path === "/api/watches") {
+      if (request.method === "GET") return json(200, { watches });
+      if (request.method === "POST") {
+        if (!siteOf(request.body?.url)) {
+          return json(400, {
+            error: "Check the highlighted fields.",
+            fieldErrors: { url: ["Enter a search URL on OnlineJobs.ph, Glassdoor, LinkedIn or Upwork"] },
+          });
+        }
+        return json(201, addWatch(request.body));
+      }
+    }
+    const index = watches.findIndex((w) => w.id === id);
+    if (index < 0) return json(404, { error: "Watch not found." });
+    if (request.method === "PATCH") {
+      Object.assign(watches[index], request.body, { updatedAt: new Date(now()).toISOString() });
+      return json(200, watches[index]);
+    }
+    if (request.method === "DELETE") {
+      watches.splice(index, 1);
+      return json(200, { ok: true });
+    }
+    return json(405, { error: "Method not allowed." });
+  };
+
   const fetchMock = vi.fn(async (url, init = {}) => {
     const parsed = new URL(url);
     const request = {
@@ -41,6 +108,7 @@ export function installFakeWatchDesk({ now = () => Date.now() } = {}) {
       query: Object.fromEntries(parsed.searchParams),
       method: init.method || "GET",
       headers: { ...(init.headers || {}) },
+      body: init.body === undefined ? undefined : JSON.parse(init.body),
       credentials: init.credentials,
       signal: init.signal,
       at: now(),
@@ -53,6 +121,7 @@ export function installFakeWatchDesk({ now = () => Date.now() } = {}) {
       return answer(request);
     }
     if (request.path === "/api/devices/current") return currentAnswer(request);
+    if (request.path === "/api/watches" || request.path.startsWith("/api/watches/")) return answerWatches(request);
     return json(404, { error: "Not found." });
   });
 
@@ -73,6 +142,22 @@ export function installFakeWatchDesk({ now = () => Date.now() } = {}) {
     setCurrent: (answer) => {
       currentAnswer = answer;
     },
+    // The account's watches, and the calls made to them.
+    watches,
+    // A watch made on the web app.
+    addWatch,
+    watchCalls: (method) =>
+      requests.filter((r) => r.path.startsWith("/api/watches") && (!method || r.method === method)),
+    // Scripts the watch routes: `answer(request)` returns a Response to
+    // send instead of the store's, or nothing to let the store answer.
+    setWatchRoute: (answer) => {
+      watchRoute = answer;
+    },
+    // The request never gets an answer; it ends when the caller aborts it.
+    hang: ({ signal }) =>
+      new Promise((_resolve, reject) =>
+        signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))),
+      ),
     json,
     pending: () => json(200, { status: "pending" }),
     approved: () => json(200, { status: "approved", token: TEST_TOKEN }),
