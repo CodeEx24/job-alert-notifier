@@ -42,6 +42,7 @@ export function installFakeWatchDesk({ now = () => Date.now() } = {}) {
       method: init.method || "GET",
       headers: { ...(init.headers || {}) },
       credentials: init.credentials,
+      signal: init.signal,
       at: now(),
     };
     requests.push(request);

@@ -191,6 +191,40 @@ describe("initAccountCard", () => {
     expect(send.mock.calls.length).toBe(calls);
   });
 
+  // A stand-in for chrome.runtime.onMessage.
+  const messageEvent = () => {
+    const listeners = [];
+    return { addListener: (fn) => listeners.push(fn), emit: (message) => listeners.map((fn) => fn(message, {}, () => {})) };
+  };
+
+  it("flips to not connected while open when the worker reports a lost connection", async () => {
+    const messages = messageEvent();
+    const send = vi.fn(async () => ({ status: "connected", email: "ada@example.com", deviceLabel: null }));
+    await initAccountCard({ send, setButtonBusy, doc, messages });
+    expect(card().state).toBe("connected");
+
+    const returned = messages.emit({
+      type: "account-state-changed",
+      state: { status: "not-connected", outcome: { reason: "revoked" } },
+    });
+    expect(card()).toMatchObject({
+      state: "not-connected",
+      connect: true,
+      detail: "This browser was disconnected from your WatchDesk account.",
+    });
+    // It does not answer, so it never holds a message channel open.
+    expect(returned).toEqual([undefined]);
+  });
+
+  it("ignores other runtime messages", async () => {
+    const messages = messageEvent();
+    const send = vi.fn(async () => ({ status: "connected", email: "ada@example.com", deviceLabel: null }));
+    await initAccountCard({ send, setButtonBusy, doc, messages });
+    messages.emit({ type: "play-sound", soundId: "x" });
+    messages.emit(undefined);
+    expect(card().state).toBe("connected");
+  });
+
   it("Cancel asks the worker to cancel", async () => {
     const send = vi.fn(async ({ type }) =>
       type === "account-cancel"

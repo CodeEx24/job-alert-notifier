@@ -88,8 +88,14 @@ export function renderAccountCard(state, doc = document) {
 }
 
 // Wires the card. `send` is popup.js's chrome.runtime.sendMessage wrapper,
-// `setButtonBusy` its spinner helper.
-export async function initAccountCard({ send, setButtonBusy, doc = document }) {
+// `setButtonBusy` its spinner helper, `messages` the event the worker's
+// broadcasts arrive on.
+export async function initAccountCard({
+  send,
+  setButtonBusy,
+  doc = document,
+  messages = globalThis.chrome?.runtime?.onMessage,
+}) {
   if (!doc.getElementById("account-card")) return;
 
   let pendingTimer = null;
@@ -131,6 +137,13 @@ export async function initAccountCard({ send, setButtonBusy, doc = document }) {
   showTabBtn.addEventListener("click", () => runAction(showTabBtn, "account-show-tab", "Opening…"));
   const cancelBtn = doc.getElementById("account-cancel");
   cancelBtn.addEventListener("click", () => runAction(cancelBtn, "account-cancel", "Cancelling…"));
+
+  // The worker announces a lost connection (a 401 on any WatchDesk call,
+  // WD-44) while the popup is open. Nothing is sent back: returning
+  // undefined leaves the message to its other receivers.
+  messages?.addListener((message) => {
+    if (message?.type === "account-state-changed") render(message.state);
+  });
 
   const state = await send({ type: "account-get-state" });
   render(state);

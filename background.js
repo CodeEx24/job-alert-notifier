@@ -972,11 +972,18 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   // (service worker wake-up time, system load, etc.), not just the
   // browser/computer being off.
   const lateByMs = Math.max(0, Date.now() - alarm.scheduledTime);
+  // WD-44: confirm the WatchDesk connection on the same schedule, so a
+  // revoked device is noticed without opening the popup. Started alongside
+  // the job checks, never ahead of them, and it cannot throw into them; it
+  // is awaited only at the end, to keep the worker alive until it is done.
+  // With no account connected it sends nothing.
+  const accountCheck = refreshAccount().catch(() => {});
   try {
     await runAllChecks({ lateByMs });
   } catch (err) {
     console.error("[job-alert] check failed", err);
   }
+  await accountCheck;
 });
 
 chrome.runtime.onInstalled.addListener(async (details) => {

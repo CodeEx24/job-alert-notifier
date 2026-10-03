@@ -37,9 +37,15 @@
 // Secrets: the token and the poll secret are never logged, never sent to
 // the popup or a content script (getConnectionState() returns neither), and
 // never put in the tab URL.
+//
+// Losing the connection (WD-44): every authenticated call goes through
+// watchdesk-api.js's authorizedRequest(), which reads the token from here
+// and reports a 401 to discardToken() below — the one place a refused token
+// is dropped. It records the outcome "revoked" and tells an open popup
+// ("account-state-changed"), so the popup flips to not connected at once.
 
 import { WATCHDESK_ORIGIN } from "./config.js";
-import { startPairing, pollPairing, getCurrentDevice } from "./watchdesk-api.js";
+import { startPairing, pollPairing, getCurrentDevice, configureAuth } from "./watchdesk-api.js";
 
 export const TOKEN_KEY = "watchdeskToken";
 export const ACCOUNT_KEY = "watchdeskAccount";
@@ -70,6 +76,30 @@ export function connectExtensionUrl(code) {
 async function readToken() {
   const { [TOKEN_KEY]: token } = await chrome.storage.local.get(TOKEN_KEY);
   return typeof token === "string" && token ? token : null;
+}
+
+// WatchDesk refused this token (401). Drop it, unless a new pairing has
+// stored another one while the request was out, and tell the popup.
+async function discardToken(refusedToken) {
+  const discarded = await withLock(async () => {
+    if ((await readToken()) !== refusedToken) return false;
+    await chrome.storage.local.remove([TOKEN_KEY, ACCOUNT_KEY]);
+    await chrome.storage.session.set({ [OUTCOME_KEY]: { reason: "revoked" } });
+    return true;
+  });
+  if (discarded) await notifyStateChanged();
+}
+
+// Tells any open extension page (the popup) the new connection state. Only
+// extension pages receive runtime messages from the worker — content
+// scripts would need tabs.sendMessage — and the state never holds the
+// token. With no popup open there is no receiver, which is fine.
+async function notifyStateChanged() {
+  try {
+    await chrome.runtime.sendMessage({ type: "account-state-changed", state: await getConnectionState() });
+  } catch {
+    // No popup open.
+  }
 }
 
 async function readPairing() {
@@ -315,14 +345,16 @@ export async function cancelConnecting() {
 }
 
 // Asks WatchDesk who this token belongs to and caches the answer for the
-// popup. A 401 means the token is dead (revoked, or the account deleted):
-// it is discarded and the extension is not connected any more. Any other
-// failure keeps the token and the last known account.
+// popup. Runs when the popup opens and after every job-check alarm, so a
+// revoked device is noticed without opening the popup. A 401 means the
+// token is dead (revoked, or the account deleted): authorizedRequest() has
+// already discarded it through discardToken(). Any other failure, after
+// the retries, keeps the token and the last known account; the next check
+// asks again.
 export async function refreshAccount() {
-  const token = await readToken();
-  if (!token) return getConnectionState();
+  if (!(await readToken())) return getConnectionState();
 
-  const result = await getCurrentDevice(token);
+  const result = await getCurrentDevice();
   if (result.kind === "ok") {
     await chrome.storage.local.set({
       [ACCOUNT_KEY]: {
@@ -330,14 +362,6 @@ export async function refreshAccount() {
         displayName: result.account.displayName,
         deviceLabel: result.device.label,
       },
-    });
-  } else if (result.kind === "unauthorized") {
-    await withLock(async () => {
-      // Only if it is still the token that was refused — a new pairing may
-      // have stored another one while this request was out.
-      if ((await readToken()) !== token) return;
-      await chrome.storage.local.remove([TOKEN_KEY, ACCOUNT_KEY]);
-      await chrome.storage.session.set({ [OUTCOME_KEY]: { reason: "revoked" } });
     });
   }
 
@@ -347,6 +371,10 @@ export async function refreshAccount() {
 }
 
 // ---------- worker wiring ----------
+
+// The authenticated path reads the token from here and reports a refused
+// one here. Done at load, so it is in place before any call can be made.
+configureAuth({ getToken: readToken, onUnauthorized: discardToken });
 
 async function handleTabRemoved(tabId) {
   const pairing = await readPairing();

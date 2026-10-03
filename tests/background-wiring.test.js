@@ -70,3 +70,76 @@ describe("background.js wiring", () => {
     expect(await sendMessage({ type: "no-such-message" })).toEqual({ ok: false, error: "Unknown message type" });
   });
 });
+
+describe("the job-check alarm also confirms the WatchDesk connection (WD-44)", () => {
+  // One disabled watch, so a check cycle runs without fetching any job site
+  // and its only visible effect is lastRunAt.
+  beforeEach(async () => {
+    await env.chrome.storage.sync.set({
+      watches: [{ id: "w1", siteId: "linkedin", url: "https://www.linkedin.com/jobs/search/?keywords=x", enabled: false }],
+    });
+  });
+
+  const checkAlarm = () => env.chrome.alarms.onAlarm.dispatch({ name: "check-jobs", scheduledTime: Date.now() });
+  const currentCalls = () => api.requests.filter((r) => r.path === "/api/devices/current");
+
+  it("asks /api/devices/current with the token on every check, and still runs the check", async () => {
+    await env.chrome.storage.local.set({ [TOKEN_KEY]: TEST_TOKEN });
+    await checkAlarm();
+    expect(currentCalls()).toHaveLength(1);
+    expect(currentCalls()[0].headers).toEqual({ Authorization: `Bearer ${TEST_TOKEN}` });
+    expect(env.chrome.storage.local.dump().lastRunAt).toBe(Date.now());
+
+    await checkAlarm();
+    expect(currentCalls()).toHaveLength(2);
+  });
+
+  it("sends nothing to WatchDesk when no account is connected", async () => {
+    await checkAlarm();
+    expect(api.fetch).not.toHaveBeenCalled();
+    expect(env.chrome.storage.local.dump().lastRunAt).toBe(Date.now());
+  });
+
+  it("does not hold up the job check while WatchDesk is slow", async () => {
+    await env.chrome.storage.local.set({ [TOKEN_KEY]: TEST_TOKEN });
+    // WatchDesk never answers; each attempt ends at the 15 s timeout.
+    api.setCurrent(
+      ({ signal }) =>
+        new Promise((_resolve, reject) =>
+          signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))),
+        ),
+    );
+    let done = false;
+    const listener = checkAlarm().then(() => {
+      done = true;
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(env.chrome.storage.local.dump().lastRunAt).toBeTypeOf("number");
+    expect(done).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(120000);
+    await listener;
+    expect(done).toBe(true);
+    // Gave up for this cycle, kept the token.
+    expect(currentCalls()).toHaveLength(4);
+    expect(env.chrome.storage.local.dump()[TOKEN_KEY]).toBe(TEST_TOKEN);
+  });
+
+  it("on a 401, discards the token and tells an open popup, and the check still runs", async () => {
+    await env.chrome.storage.local.set({ [TOKEN_KEY]: TEST_TOKEN });
+    api.setCurrent(() => api.json(401, { error: "Sign in to continue." }));
+    env.chrome.runtime.sendMessage.mockResolvedValue(undefined);
+    await checkAlarm();
+
+    expect(env.chrome.storage.local.dump()[TOKEN_KEY]).toBeUndefined();
+    expect(env.chrome.runtime.sendMessage).toHaveBeenCalledWith({
+      type: "account-state-changed",
+      state: { status: "not-connected", outcome: { reason: "revoked" } },
+    });
+    expect(env.chrome.storage.local.dump().lastRunAt).toBe(Date.now());
+    expect(await sendMessage({ type: "account-get-state" })).toEqual({
+      status: "not-connected",
+      outcome: { reason: "revoked" },
+    });
+  });
+});

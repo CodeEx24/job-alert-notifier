@@ -93,6 +93,11 @@ export function installChromeMock() {
       onInstalled: createEvent(),
       onStartup: createEvent(),
       getManifest: () => ({ version: "1.1.0" }),
+      // What Chrome does when no extension page (popup) is open to receive
+      // a message from the worker. A test can mock an open popup instead.
+      sendMessage: vi.fn(async () => {
+        throw new Error("Could not establish connection. Receiving end does not exist.");
+      }),
     },
     notifications: {
       onClicked: createEvent(),
