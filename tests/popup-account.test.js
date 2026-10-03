@@ -216,6 +216,16 @@ describe("initAccountCard", () => {
     expect(returned).toEqual([undefined]);
   });
 
+  it("tells onState every state it renders, so the popup can re-read the watch list (WD-54)", async () => {
+    const messages = messageEvent();
+    const onState = vi.fn();
+    const send = vi.fn(async () => ({ status: "connected", email: "ada@example.com", deviceLabel: null }));
+    await initAccountCard({ send, setButtonBusy, doc, messages, onState });
+    messages.emit({ type: "account-state-changed", state: { status: "not-connected", outcome: { reason: "revoked" } } });
+
+    expect(onState.mock.calls.map(([state]) => state.status)).toEqual(["connected", "connected", "not-connected"]);
+  });
+
   it("ignores other runtime messages", async () => {
     const messages = messageEvent();
     const send = vi.fn(async () => ({ status: "connected", email: "ada@example.com", deviceLabel: null }));

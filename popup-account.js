@@ -89,18 +89,22 @@ export function renderAccountCard(state, doc = document) {
 
 // Wires the card. `send` is popup.js's chrome.runtime.sendMessage wrapper,
 // `setButtonBusy` its spinner helper, `messages` the event the worker's
-// broadcasts arrive on.
+// broadcasts arrive on. `onState`, if given, is told every state the card
+// renders, so the popup can re-read the watch list when the connection
+// changes (WD-54).
 export async function initAccountCard({
   send,
   setButtonBusy,
   doc = document,
   messages = globalThis.chrome?.runtime?.onMessage,
+  onState,
 }) {
   if (!doc.getElementById("account-card")) return;
 
   let pendingTimer = null;
   const render = (state) => {
     renderAccountCard(state, doc);
+    onState?.(state);
     // While a pairing is pending, re-read the state every second: it keeps
     // the countdown moving and shows "connected" as soon as the worker has
     // collected the token, without the user reopening the popup.

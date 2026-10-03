@@ -1,6 +1,7 @@
 import { SOUND_OPTIONS } from "./sounds.js";
 import { SITES, siteForUrl, pickWatchTabFromCandidates } from "./sites.js";
 import { initAccountCard } from "./popup-account.js";
+import { renderWatchSync, renderWatchChange } from "./popup-watch-sync.js";
 
 // Must match background.js's own ALARM_NAME — they're separate module
 // graphs (background service worker vs. popup page) with no shared import,
@@ -20,6 +21,41 @@ const STUCK_THRESHOLD = 3;
 
 function send(message) {
   return chrome.runtime.sendMessage(message);
+}
+
+// Sends a change to the watch list, then re-reads the state. With a
+// WatchDesk account connected (WD-54) the change is a call to WatchDesk and
+// the worker can refuse it — offline, rate-limited — so the reason is shown
+// above the list and, when Settings is open, in its status line. With no
+// account connected it always goes through, as before.
+async function changeWatches(message) {
+  const result = await send(message);
+  if (!renderWatchChange(result) && document.getElementById("settings-panel").classList.contains("open")) {
+    const settingsStatus = document.getElementById("settings-status-msg");
+    settingsStatus.textContent = result.error || "Couldn't change that watch.";
+    settingsStatus.className = "settings-status error";
+  }
+  await refresh();
+  return result;
+}
+
+// WD-54: asks the worker to bring the watch list in step with the connected
+// WatchDesk account, then shows the result. The popup has already rendered
+// the last-synced list by the time this runs, so a slow or unreachable
+// WatchDesk never leaves it empty. Does nothing visible when no account is
+// connected.
+async function syncWatchesAndRender() {
+  let status;
+  try {
+    status = await send({ type: "sync-watches" });
+  } catch {
+    return;
+  }
+  if (status?.mode !== "account" && lastState?.watchSync?.mode !== "account") return;
+  lastState = await send({ type: "get-state" });
+  // Don't rebuild the list under someone who is renaming a watch.
+  if (editingWatchId) renderWatchSync(lastState.watchSync);
+  else renderAll();
 }
 
 // --- Tab reuse helpers --------------------------------------------------
@@ -478,8 +514,7 @@ function buildWatchItem(watch, runState) {
   toggleBtn.className = "secondary";
   toggleBtn.textContent = watch.enabled ? "Pause" : "Resume";
   toggleBtn.addEventListener("click", async () => {
-    await send({ type: "toggle-watch", id: watch.id, enabled: !watch.enabled });
-    await refresh();
+    await changeWatches({ type: "toggle-watch", id: watch.id, enabled: !watch.enabled });
   });
   actions.appendChild(toggleBtn);
 
@@ -487,8 +522,7 @@ function buildWatchItem(watch, runState) {
   removeBtn.className = "secondary danger-hover";
   removeBtn.textContent = "Remove";
   removeBtn.addEventListener("click", async () => {
-    await send({ type: "remove-watch", id: watch.id });
-    await refresh();
+    await changeWatches({ type: "remove-watch", id: watch.id });
   });
   actions.appendChild(removeBtn);
   item.appendChild(actions);
@@ -697,8 +731,7 @@ function buildWatchGroup(groupKey, siteId, siteName, watchesForSite, runState) {
   pauseBtn.textContent = "Pause";
   pauseBtn.disabled = activeCount === 0;
   pauseBtn.addEventListener("click", async () => {
-    await send({ type: "set-site-enabled", siteId, enabled: false });
-    await refresh();
+    await changeWatches({ type: "set-site-enabled", siteId, enabled: false });
   });
   groupActions.appendChild(pauseBtn);
 
@@ -707,8 +740,7 @@ function buildWatchGroup(groupKey, siteId, siteName, watchesForSite, runState) {
   resumeBtn.textContent = "Resume";
   resumeBtn.disabled = pausedCount === 0;
   resumeBtn.addEventListener("click", async () => {
-    await send({ type: "set-site-enabled", siteId, enabled: true });
-    await refresh();
+    await changeWatches({ type: "set-site-enabled", siteId, enabled: true });
   });
   groupActions.appendChild(resumeBtn);
 
@@ -1152,8 +1184,7 @@ function renderSettingsPerSite(settings) {
     pauseBtn.textContent = "Pause";
     pauseBtn.disabled = activeCount === 0;
     pauseBtn.addEventListener("click", async () => {
-      await send({ type: "set-site-enabled", siteId, enabled: false });
-      await refresh();
+      await changeWatches({ type: "set-site-enabled", siteId, enabled: false });
     });
     actions.appendChild(pauseBtn);
 
@@ -1162,8 +1193,7 @@ function renderSettingsPerSite(settings) {
     resumeBtn.textContent = "Resume";
     resumeBtn.disabled = pausedCount === 0;
     resumeBtn.addEventListener("click", async () => {
-      await send({ type: "set-site-enabled", siteId, enabled: true });
-      await refresh();
+      await changeWatches({ type: "set-site-enabled", siteId, enabled: true });
     });
     actions.appendChild(resumeBtn);
 
@@ -1257,6 +1287,7 @@ function renderVersionInfo(version) {
 
 function renderAll() {
   if (!lastState) return;
+  renderWatchSync(lastState.watchSync);
   renderWatchList(lastState.settings, lastState.runState);
   renderFeed(lastState.runState);
   syncControls(lastState.settings);
@@ -1347,7 +1378,16 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // WatchDesk account card (WD-42). Not awaited: it may wait on the
   // network, and nothing below depends on it.
-  initAccountCard({ send, setButtonBusy }).catch(() => {});
+  // WD-54: when the card's connection changes while the popup is open (a
+  // pairing approved, a device revoked), the watch list changes hands too.
+  let accountStatus = null;
+  const onAccountState = (state) => {
+    const status = state?.status === "connected" ? "connected" : "not-connected";
+    const changed = accountStatus !== null && status !== accountStatus;
+    accountStatus = status;
+    if (changed && lastState) syncWatchesAndRender().catch(() => {});
+  };
+  initAccountCard({ send, setButtonBusy, onState: onAccountState }).catch(() => {});
 
   // Restore the last search/filter/sort choice before the first render, so
   // reopening the popup shows the feed the way it was left instead of
@@ -1368,10 +1408,16 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   await send({ type: "clear-badge" });
   await refresh();
+  // WD-54: the list above is the last-synced one; now fetch the account's
+  // current list. Not awaited: it may wait on the network.
+  syncWatchesAndRender().catch(() => {});
 
   // Keeps "checked Xm ago / next check in ~Ym" accurate for as long as the
   // popup stays open, without re-fetching or re-rendering everything else.
-  setInterval(() => renderCheckStatus().catch(() => {}), 30000);
+  setInterval(() => {
+    renderCheckStatus().catch(() => {});
+    renderWatchSync(lastState?.watchSync);
+  }, 30000);
 
   document.getElementById("open-required-tabs").addEventListener("click", async (e) => {
     const btn = e.currentTarget;
@@ -1397,12 +1443,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   document.getElementById("pause-all").addEventListener("click", async () => {
-    await send({ type: "pause-all" });
-    await refresh();
+    await changeWatches({ type: "pause-all" });
   });
   document.getElementById("resume-all").addEventListener("click", async () => {
-    await send({ type: "resume-all" });
-    await refresh();
+    await changeWatches({ type: "resume-all" });
   });
 
   document.getElementById("mute-notifications").addEventListener("change", async (e) => {
@@ -1527,8 +1571,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   document.getElementById("reset-extension").addEventListener("click", async () => {
+    // WD-54: a connected account's watches are not this browser's to clear.
     const confirmed = confirm(
-      "Reset Job Alert Notifier? This clears every watch, the whole feed, and all settings back to defaults. This can't be undone — export a backup first if you want to keep any of it."
+      lastState?.watchSync?.mode === "account"
+        ? "Reset Job Alert Notifier? This clears the whole feed and all settings back to defaults. Your watches are kept: they belong to your WatchDesk account. This can't be undone."
+        : "Reset Job Alert Notifier? This clears every watch, the whole feed, and all settings back to defaults. This can't be undone — export a backup first if you want to keep any of it."
     );
     if (!confirmed) return;
     await send({ type: "reset-extension" });
@@ -1666,6 +1713,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     const result = await send({ type: "add-watch", url, label });
     if (!result.ok) {
       errorEl.textContent = result.error || "Couldn't add that watch.";
+      // WD-54: a refusal by WatchDesk may have changed the offline line.
+      if (lastState?.watchSync?.mode === "account") await refresh();
       return;
     }
     urlInput.value = "";

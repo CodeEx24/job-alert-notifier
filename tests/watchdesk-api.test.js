@@ -11,6 +11,10 @@ import {
   configureAuth,
   backoffDelayMs,
   RETRY_POLICY,
+  listWatches,
+  createWatch,
+  updateWatch,
+  deleteWatch,
 } from "../watchdesk-api.js";
 import { WATCHDESK_ORIGIN } from "../config.js";
 
@@ -375,6 +379,168 @@ describe("one authenticated path", () => {
     const api = readFileSync("watchdesk-api.js", "utf8");
     expect(api.match(/\bfetch\(/g)).toHaveLength(1);
     expect(api.match(/Bearer \$\{/g)).toHaveLength(1);
+  });
+});
+
+describe("request bodies (WD-54)", () => {
+  it("sends a body as JSON with its content type, through the one authenticated path", async () => {
+    fetchMock.mockResolvedValue(json(201, {}));
+    await authorizedRequest("/api/x", { method: "POST", body: { url: "https://a.test", enabled: false } });
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.body).toBe('{"url":"https://a.test","enabled":false}');
+    expect(init.headers).toEqual({ "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}` });
+  });
+
+  it("sends no body and no content type when there is none", async () => {
+    fetchMock.mockResolvedValue(json(200, {}));
+    await authorizedRequest("/api/x", { method: "DELETE" });
+    const [, init] = fetchMock.mock.calls[0];
+    expect("body" in init).toBe(false);
+    expect(init.headers).toEqual({ Authorization: `Bearer ${TOKEN}` });
+  });
+});
+
+describe("the watch calls (WD-52's routes)", () => {
+  const WATCH = {
+    id: "0b7c6c53-6f4a-4f43-9a3b-0c1f4a3f9a11",
+    siteId: "linkedin",
+    url: "https://www.linkedin.com/jobs/search/?keywords=x",
+    label: "X",
+    enabled: false,
+    createdAt: "2026-10-01T00:00:00.000Z",
+    updatedAt: "2026-10-02T00:00:00.000Z",
+  };
+  const KEPT = { id: WATCH.id, siteId: "linkedin", url: WATCH.url, label: "X", enabled: false };
+
+  it("listWatches: GET /api/watches with the token, keeping only what the extension stores", async () => {
+    fetchMock.mockResolvedValue(json(200, { watches: [WATCH] }));
+    expect(await listWatches()).toEqual({ kind: "ok", watches: [KEPT] });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${WATCHDESK_ORIGIN}/api/watches`);
+    expect(init).toMatchObject({ method: "GET", headers: { Authorization: `Bearer ${TOKEN}` }, credentials: "omit" });
+  });
+
+  it("listWatches: an empty account is an empty list", async () => {
+    fetchMock.mockResolvedValue(json(200, { watches: [] }));
+    expect(await listWatches()).toEqual({ kind: "ok", watches: [] });
+  });
+
+  it("listWatches: is asked once — no retry on a network error, a 5xx or a 429", async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    expect(await listWatches()).toEqual({ kind: "unreachable" });
+    fetchMock.mockResolvedValueOnce(json(503, {}));
+    expect(await listWatches()).toEqual({ kind: "error", status: 503 });
+    fetchMock.mockResolvedValueOnce(json(429, {}, { "Retry-After": "1" }));
+    expect(await listWatches()).toEqual({ kind: "rate-limited", retryAfterSeconds: 1 });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("listWatches: gives up after 10 seconds", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    fetchMock.mockImplementation(
+      (_url, { signal }) =>
+        new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")))),
+    );
+    const pending = listWatches();
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(await pending).toEqual({ kind: "unreachable" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["no list", {}],
+    ["a list that is not an array", { watches: "nope" }],
+    ["an entry with no id", { watches: [{ ...WATCH, id: undefined }] }],
+    ["an entry with no url", { watches: [WATCH, { ...WATCH, url: "" }] }],
+    ["an entry that is null", { watches: [null] }],
+  ])("listWatches: %s is an error, never a shorter list", async (_name, body) => {
+    fetchMock.mockResolvedValue(json(200, body));
+    expect(await listWatches()).toEqual({ kind: "error", status: 200 });
+  });
+
+  it("listWatches: a 401 goes to the shared handler", async () => {
+    fetchMock.mockResolvedValue(json(401, { error: "Sign in to continue." }));
+    expect(await listWatches()).toEqual({ kind: "unauthorized" });
+    expect(onUnauthorized).toHaveBeenCalledWith(TOKEN);
+  });
+
+  it("createWatch: POST /api/watches with url, label and enabled; 201 is the watch", async () => {
+    fetchMock.mockResolvedValue(json(201, WATCH));
+    expect(await createWatch({ url: WATCH.url, label: "X", enabled: false })).toEqual({ kind: "ok", watch: KEPT });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${WATCHDESK_ORIGIN}/api/watches`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({ url: WATCH.url, label: "X", enabled: false });
+  });
+
+  it("createWatch: leaves out an empty label and an unset enabled, and never sends a siteId or an id", async () => {
+    fetchMock.mockResolvedValue(json(201, WATCH));
+    await createWatch({ url: WATCH.url, label: "", siteId: "upwork", id: "mine" });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ url: WATCH.url });
+  });
+
+  it("createWatch: a 400 carries WatchDesk's field message; a 403 is forbidden; neither is retried", async () => {
+    fetchMock.mockResolvedValueOnce(json(400, { error: "Check the fields.", fieldErrors: { url: ["Enter a search URL"] } }));
+    expect(await createWatch({ url: "x" })).toEqual({ kind: "invalid", message: "Enter a search URL" });
+    fetchMock.mockResolvedValueOnce(json(400, { error: "That is not JSON." }));
+    expect(await createWatch({ url: "x" })).toEqual({ kind: "invalid", message: "That is not JSON." });
+    fetchMock.mockResolvedValueOnce(json(400, {}));
+    expect(await createWatch({ url: "x" })).toEqual({ kind: "invalid", message: null });
+    fetchMock.mockResolvedValueOnce(json(403, { error: "Verify your email address to do this." }));
+    expect(await createWatch({ url: "x" })).toEqual({ kind: "forbidden" });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("createWatch: is sent once even when WatchDesk cannot be reached (it is not idempotent)", async () => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+    expect(await createWatch({ url: WATCH.url })).toEqual({ kind: "unreachable" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("createWatch: a 200 or a 201 without a watch is an error", async () => {
+    fetchMock.mockResolvedValueOnce(json(200, WATCH));
+    expect(await createWatch({ url: WATCH.url })).toEqual({ kind: "error", status: 200 });
+    fetchMock.mockResolvedValueOnce(json(201, { ok: true }));
+    expect(await createWatch({ url: WATCH.url })).toEqual({ kind: "error", status: 201 });
+  });
+
+  it("updateWatch: PATCH /api/watches/[id] with the patch; 404 is not-found", async () => {
+    fetchMock.mockResolvedValueOnce(json(200, { ...WATCH, label: "Renamed" }));
+    expect(await updateWatch(WATCH.id, { label: "Renamed" })).toEqual({ kind: "ok", watch: { ...KEPT, label: "Renamed" } });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${WATCHDESK_ORIGIN}/api/watches/${WATCH.id}`);
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body)).toEqual({ label: "Renamed" });
+
+    fetchMock.mockResolvedValueOnce(json(404, { error: "Watch not found." }));
+    expect(await updateWatch(WATCH.id, { enabled: true })).toEqual({ kind: "not-found" });
+  });
+
+  it("deleteWatch: DELETE /api/watches/[id]; 200 is ok, 404 is not-found, and it is sent once", async () => {
+    fetchMock.mockResolvedValueOnce(json(200, { ok: true }));
+    expect(await deleteWatch(WATCH.id)).toEqual({ kind: "ok" });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${WATCHDESK_ORIGIN}/api/watches/${WATCH.id}`);
+    expect(init.method).toBe("DELETE");
+    expect("body" in init).toBe(false);
+
+    fetchMock.mockResolvedValueOnce(json(404, { error: "Watch not found." }));
+    expect(await deleteWatch(WATCH.id)).toEqual({ kind: "not-found" });
+    fetchMock.mockResolvedValueOnce(json(500, {}));
+    expect(await deleteWatch(WATCH.id)).toEqual({ kind: "error", status: 500 });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps an id from an old local watch inside its path segment", async () => {
+    fetchMock.mockResolvedValue(json(404, {}));
+    await deleteWatch("a/b?c");
+    expect(fetchMock.mock.calls[0][0]).toBe(`${WATCHDESK_ORIGIN}/api/watches/a%2Fb%3Fc`);
+  });
+
+  it("never puts the token in a result", async () => {
+    fetchMock.mockResolvedValue(json(200, { watches: [WATCH] }));
+    const results = [await listWatches(), await createWatch({ url: "x" }), await updateWatch("i", {}), await deleteWatch("i")];
+    expect(JSON.stringify(results)).not.toContain(TOKEN);
   });
 });
 
