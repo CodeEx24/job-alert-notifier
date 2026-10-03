@@ -41,6 +41,12 @@ Reference documents in the WatchDesk repository:
   secret is treated the same way, and it lives in `chrome.storage.session`.
 - **Only the service worker talks to the WatchDesk API**, through
   `watchdesk-api.js`. The popup asks the worker via messages.
+- **Every call that carries the device token goes through
+  `authorizedRequest()`** in `watchdesk-api.js` (WD-44): it adds the Bearer
+  header, retries per `RETRY_POLICY`, and hands a 401 to the one handler
+  that discards the token. Never build an `Authorization` header elsewhere.
+  Pass `idempotent: true` on a POST/PATCH only when the server dedupes
+  repeats. The pairing calls stay on the single-attempt `requestJson()`.
 - **The WatchDesk origin is named in one place:** `config.js`, plus the same
   origins in `manifest.json`'s `host_permissions`. `tests/config.test.js`
   enforces this.
@@ -58,7 +64,7 @@ Reference documents in the WatchDesk repository:
 | `manifest.json` | Permissions, hosts, content scripts, worker, popup |
 | `background.js` | Service worker: check cycle, feed, notifications, popup messages |
 | `config.js` | The WatchDesk origin (production / development) |
-| `watchdesk-api.js` | The only WatchDesk API client (`requestJson` + one function per route) |
+| `watchdesk-api.js` | The only WatchDesk API client (`requestJson`, the authenticated `authorizedRequest` with retries (WD-44), one function per route) |
 | `account-connection.js` | Device pairing, token storage, connected state (WD-42) |
 | `popup.html` / `popup.css` / `popup.js` | The popup |
 | `popup-account.js` | The popup's account card (WD-42) |

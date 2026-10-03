@@ -15,6 +15,8 @@ this file mirrors its must-follow rules.
   popup or a content script, or the DOM. The same goes for the pairing poll
   secret, which lives in `chrome.storage.session`.
 - **Only the service worker calls the WatchDesk API** (`watchdesk-api.js`).
+  Every token-carrying call goes through `authorizedRequest()` (Bearer
+  header, retries, the shared 401 handler); none builds its own.
 - **The WatchDesk origin lives only in `config.js`** (and `manifest.json`'s
   `host_permissions`).
 - **No regression in shipped behaviour:** Open All Tabs, the settings panel,
