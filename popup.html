@@ -19,6 +19,19 @@
       <span id="update-banner-text"></span>
     </div>
 
+    <!-- WatchDesk account (WD-42). Filled in by popup-account.js. -->
+    <section id="account-card" class="account-card" data-state="loading" aria-live="polite">
+      <div class="account-card-text">
+        <span id="account-title" class="account-card-title">WatchDesk account</span>
+        <span class="account-card-detail"><span id="account-detail"></span><span id="account-countdown" aria-hidden="true"></span></span>
+      </div>
+      <div class="account-card-actions">
+        <button id="account-connect" hidden>Connect Account</button>
+        <button id="account-show-tab" class="secondary" hidden>Show tab</button>
+        <button id="account-cancel" class="secondary" hidden>Cancel</button>
+      </div>
+    </section>
+
     <section id="settings-panel" class="settings-panel">
       <div class="settings-panel-header">
         <h2>Settings</h2>

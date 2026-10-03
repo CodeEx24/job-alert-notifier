@@ -19,6 +19,14 @@
 //     (larger / more frequently written run-state, kept local only)
 
 import { SITES, siteForUrl, pickWatchTabFromCandidates } from "./sites.js";
+import {
+  registerAccountConnection,
+  getConnectionState,
+  startConnecting,
+  showPairingTab,
+  cancelConnecting,
+  refreshAccount,
+} from "./account-connection.js";
 
 const ALARM_NAME = "check-jobs";
 const OFFSCREEN_URL = "offscreen.html";
@@ -1008,6 +1016,11 @@ chrome.runtime.onStartup.addListener(async () => {
   }
 });
 
+// WatchDesk account connection (WD-42): its own tab and alarm listeners,
+// and it resumes a pairing that was in progress when the worker stopped.
+// Must run at the top level, like the listeners above.
+registerAccountConnection();
+
 // ---------- messages from popup.js ----------
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -1199,6 +1212,28 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case "import-settings": {
         const result = await importSettings(message.data);
         sendResponse(result);
+        break;
+      }
+      // WatchDesk account (WD-42). Each answers with the connection state
+      // from account-connection.js, which never includes the token.
+      case "account-get-state": {
+        sendResponse(await getConnectionState());
+        break;
+      }
+      case "account-refresh": {
+        sendResponse(await refreshAccount());
+        break;
+      }
+      case "account-connect": {
+        sendResponse(await startConnecting());
+        break;
+      }
+      case "account-show-tab": {
+        sendResponse(await showPairingTab());
+        break;
+      }
+      case "account-cancel": {
+        sendResponse(await cancelConnecting());
         break;
       }
       default:

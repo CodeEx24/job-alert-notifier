@@ -1,5 +1,6 @@
 import { SOUND_OPTIONS } from "./sounds.js";
 import { SITES, siteForUrl, pickWatchTabFromCandidates } from "./sites.js";
+import { initAccountCard } from "./popup-account.js";
 
 // Must match background.js's own ALARM_NAME — they're separate module
 // graphs (background service worker vs. popup page) with no shared import,
@@ -1343,6 +1344,10 @@ function populateSoundOptions() {
 
 document.addEventListener("DOMContentLoaded", async () => {
   populateSoundOptions();
+
+  // WatchDesk account card (WD-42). Not awaited: it may wait on the
+  // network, and nothing below depends on it.
+  initAccountCard({ send, setButtonBusy }).catch(() => {});
 
   // Restore the last search/filter/sort choice before the first render, so
   // reopening the popup shows the feed the way it was left instead of
