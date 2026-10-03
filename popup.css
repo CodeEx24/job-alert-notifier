@@ -145,6 +145,86 @@ header .tagline {
   display: none;
 }
 
+/* WatchDesk account card (WD-42) — see popup-account.js. A compact card
+   with the same surface as the settings panel; data-tone colours only the
+   detail line and the status dot. */
+.account-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  margin-bottom: 12px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.account-card-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.account-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.account-card-title::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.account-card[data-tone="ok"] .account-card-title::before {
+  background: var(--success-text);
+}
+
+.account-card[data-state="pending"] .account-card-title::before {
+  background: var(--accent);
+}
+
+.account-card[data-tone="problem"] .account-card-title::before {
+  background: var(--warning);
+}
+
+.account-card-detail {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-card[data-tone="problem"] .account-card-detail {
+  color: var(--warning);
+  white-space: normal;
+}
+
+.account-card-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.account-card-actions button {
+  padding: 5px 10px;
+  font-size: 11.5px;
+}
+
+.account-card-actions button[hidden] {
+  display: none;
+}
+
 .icon-btn {
   flex-shrink: 0;
   width: 26px;

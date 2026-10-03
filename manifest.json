@@ -8,7 +8,9 @@
     "https://www.onlinejobs.ph/*",
     "https://www.glassdoor.com/*",
     "https://www.linkedin.com/*",
-    "https://www.upwork.com/*"
+    "https://www.upwork.com/*",
+    "https://watchdesk-rosy.vercel.app/*",
+    "http://localhost:3000/*"
   ],
   "content_scripts": [
     {

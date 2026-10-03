@@ -1,0 +1,21 @@
+{
+  "name": "job-alert-notifier",
+  "private": true,
+  "description": "Dev tooling for the Job Alert Notifier Chrome extension. The extension itself has no build step and no runtime dependencies: load the repository root unpacked.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "lint": "eslint config.js watchdesk-api.js account-connection.js popup-account.js tests scripts eslint.config.js vitest.config.js && node scripts/check-syntax.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0",
+    "jsdom": "^30.1.1",
+    "vitest": "^5.0.3"
+  }
+}
