@@ -243,14 +243,39 @@ describe("a batch WatchDesk answers with something there is no rule for", () => 
 
       expect(queuedIds()).toEqual(["a:401", "b:402", "c:403"]);
       expect(queue().items.every((item) => !("attempts" in item))).toBe(true);
-      // What the popup's line is drawn from: amber, three waiting, none dropped.
-      expect(await ingest.getListingSyncStatus()).toEqual({ lastIngestedAt: null, failed: true, queued: 3, dropped: 0 });
+      // What the popup's line is drawn from: amber, three waiting, none
+      // dropped, and (WD-73) that it was the account WatchDesk refused.
+      expect(await ingest.getListingSyncStatus()).toEqual({
+        lastIngestedAt: null,
+        failed: true,
+        reason: "forbidden",
+        queued: 3,
+        dropped: 0,
+      });
 
       // The user puts it right; the next cycle sends everything.
       recover();
       expect(await ingest.ingestCheckedListings([])).toEqual({ status: "ok", sent: 3, unsent: 0 });
       expect(api.listings).toHaveLength(3);
       expect(queue()).toBeUndefined();
+      expect(await ingest.getListingSyncStatus()).toEqual({ lastIngestedAt: Date.now(), failed: false, queued: 0, dropped: 0 });
+    });
+
+    it("the reason is the last cycle's: an outage after a 403 no longer says the account is refused (WD-73)", async () => {
+      forbid();
+      await ingest.ingestCheckedListings(cycle());
+      expect(listingState()).toEqual({ lastIngestedAt: null, failed: true, reason: "forbidden" });
+
+      expect(await failCycle([])).toMatchObject({ status: "failed" });
+      expect(listingState()).toEqual({ lastIngestedAt: null, failed: true });
+      expect(await ingest.getListingSyncStatus()).toEqual({ lastIngestedAt: null, failed: true, queued: 3, dropped: 0 });
+    });
+
+    it("a reason stored beside a cycle that did not fail, or one this code does not know, is not passed on (WD-73)", async () => {
+      await env.chrome.storage.local.set({ [LISTING_SYNC_KEY]: { lastIngestedAt: 5, failed: false, reason: "forbidden" } });
+      expect(await ingest.getListingSyncStatus()).toEqual({ lastIngestedAt: 5, failed: false, queued: 0, dropped: 0 });
+      await env.chrome.storage.local.set({ [LISTING_SYNC_KEY]: { lastIngestedAt: 5, failed: true, reason: "<b>x</b>" } });
+      expect(await ingest.getListingSyncStatus()).toEqual({ lastIngestedAt: 5, failed: true, queued: 0, dropped: 0 });
     });
 
     it("does not add to the attempts a listing already has", async () => {

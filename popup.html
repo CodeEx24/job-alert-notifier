@@ -19,11 +19,20 @@
       <span id="update-banner-text"></span>
     </div>
 
-    <!-- WatchDesk account (WD-42). Filled in by popup-account.js. -->
-    <section id="account-card" class="account-card" data-state="loading" aria-live="polite">
+    <!-- WatchDesk account and sync status (WD-42, WD-73): the popup's one
+         status area. popup-account.js fills in whose account it is;
+         popup-watch-sync.js the sync line beneath, shown only while an
+         account is connected. The live regions are the parts that change
+         with the state; the countdown and the "last synced" time tick and
+         are not announced. -->
+    <section id="account-card" class="account-card" data-state="loading">
       <div class="account-card-text">
-        <span id="account-title" class="account-card-title">WatchDesk account</span>
-        <span class="account-card-detail"><span id="account-detail"></span><span id="account-countdown" aria-hidden="true"></span></span>
+        <span id="account-title" class="account-card-title" aria-live="polite">WatchDesk account</span>
+        <span class="account-card-detail"><span id="account-detail" aria-live="polite"></span><span id="account-countdown" aria-hidden="true"></span></span>
+        <div id="watch-sync-status" class="watch-sync-status" hidden>
+          <span id="watch-sync-last" class="watch-sync-last"></span>
+          <span id="watch-sync-text" role="status"></span>
+        </div>
       </div>
       <div class="account-card-actions">
         <button id="account-connect" hidden>Connect Account</button>
@@ -157,9 +166,8 @@
     <div id="check-status" class="check-status"></div>
     <div id="check-status-gap" class="check-status-gap" hidden></div>
 
-    <!-- Watch list vs the connected WatchDesk account (WD-54). Filled in by
-         popup-watch-sync.js; hidden while no account is connected. -->
-    <div id="watch-sync-status" class="watch-sync-status" role="status" hidden></div>
+    <!-- Why a change to a connected account's watch list was refused
+         (WD-54). Filled in by popup-watch-sync.js. -->
     <div id="watch-change-error" class="watch-change-error" role="alert"></div>
 
     <div id="watch-list-banner"></div>
