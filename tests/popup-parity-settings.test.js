@@ -42,7 +42,8 @@ const RESET_CONFIRM =
 
 // Messages the popup has sent since the account work began; the shipped
 // popup sends none of them.
-const SINCE_SHIPPED = /^(account-|sync-watches$|listing-drops-seen$)/;
+// WD-71 added set-watcher-state (Start Watching / Pause Watching).
+const SINCE_SHIPPED = /^(account-|sync-watches$|listing-drops-seen$|set-watcher-state$)/;
 const asShipped = (messages) => messages.filter((m) => !SINCE_SHIPPED.test(m.type));
 
 let ext;
@@ -628,9 +629,35 @@ describe.each(TESTED_MODES)("the popup's settings $mode", ({ connected }) => {
     for (const word of ["intervalMinutes", "soundId", "notificationsMuted", "titleFilter", "zzkeywordzz", "alert"]) {
       expect(sentToWatchDesk).not.toContain(word);
     }
-    expect(ext.watchdeskCalls().some((r) => /settings/i.test(r.path))).toBe(false);
+    // WD-71: the one thing asked of the settings route is whether the account
+    // has this browser's watcher state. It is a read with no body; nothing
+    // is written there while the state is unchanged.
+    const settingsCalls = ext.watchdeskCalls().filter((r) => /settings/i.test(r.path));
+    expect(settingsCalls.every((r) => r.method === "GET" && r.body === undefined)).toBe(true);
     // And the sync that ran on reopening left them alone.
     expect(ext.sync()).toMatchObject({ intervalMinutes: 15, soundId: "alert", notificationsMuted: true });
+    expect(ext.sync().titleFilter.keywords.at(-1)).toBe("zzkeywordzz");
+  });
+
+  // WD-71: the one write to the settings route. It sends back what the
+  // account already holds, with the watcher state changed.
+  it.skipIf(!connected)("Pause Watching reports the state with the account's own settings, never this browser's", async () => {
+    const popup = await start();
+    await popup.choose(popup.$("interval"), "30");
+    await popup.choose(popup.$("sound"), "alert");
+    popup.$("title-filter-new-keyword").value = "zzkeywordzz";
+    await popup.click(popup.$("title-filter-add-btn"));
+    const onWatchDesk = ext.api.settings();
+    ext.take();
+
+    await popup.click(popup.$("watcher-toggle"));
+
+    expect(ext.take().filter((m) => m.type === "set-watcher-state")).toEqual([{ type: "set-watcher-state", state: "paused" }]);
+    const writes = ext.watchdeskCalls().filter((r) => /settings/i.test(r.path) && r.method !== "GET");
+    expect(writes.map((r) => [r.method, r.body])).toEqual([["PUT", { ...onWatchDesk, watcherState: "paused" }]]);
+    expect(JSON.stringify(writes.map((r) => r.body))).not.toContain("zzkeywordzz");
+    // This browser's settings are as the user left them.
+    expect(ext.sync()).toMatchObject({ intervalMinutes: 30, soundId: "alert" });
     expect(ext.sync().titleFilter.keywords.at(-1)).toBe("zzkeywordzz");
   });
 });

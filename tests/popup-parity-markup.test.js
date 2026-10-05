@@ -120,6 +120,33 @@ describe("popup.html keeps every control of the shipped popup", () => {
   });
 });
 
+// Controls added since the shipped popup, each by the ticket named, in
+// document order. The shipped copy has none of them, so this is skipped
+// against it.
+const ADDED_SINCE_SHIPPED = [
+  // WD-71: Start Watching / Pause Watching.
+  ["watcher-control", "section"],
+  ["watcher-status", "span"],
+  ["watcher-detail", "span"],
+  ["watcher-toggle", "button"],
+];
+
+describe.skipIf(REFERENCE_ROOT)("popup.html's controls added since the shipped popup", () => {
+  it.each(ADDED_SINCE_SHIPPED)("#%s is a %s, once", (id, expected) => {
+    const el = doc.getElementById(id);
+    expect(el, `#${id} is gone`).not.toBeNull();
+    expect(kind(el)).toBe(expected);
+    expect(doc.querySelectorAll(`[id="${id}"]`)).toHaveLength(1);
+  });
+
+  it("Start / Pause Watching (WD-71) is on the main page, between the settings panel and the check controls", () => {
+    const control = doc.getElementById("watcher-control");
+    expect(control.closest("#settings-panel")).toBeNull();
+    expect(doc.getElementById("settings-panel").compareDocumentPosition(control) & 4).toBe(4);
+    expect(control.compareDocumentPosition(doc.getElementById("interval")) & 4).toBe(4);
+  });
+});
+
 describe("manifest.json still lets the popup do it", () => {
   const manifest = JSON.parse(readFileSync(resolve(ROOT, "manifest.json"), "utf8"));
 
