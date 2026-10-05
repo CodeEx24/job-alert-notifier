@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installChromeMock } from "./helpers/chrome-mock.js";
 import { installFakeWatchDesk, TEST_TOKEN } from "./helpers/fake-watchdesk.js";
-import { LISTING_SYNC_KEY, TOKEN_KEY } from "../account-connection.js";
+import { ACCOUNT_KEY, LISTING_QUEUE_KEY, LISTING_SYNC_KEY, TOKEN_KEY } from "../account-connection.js";
 
 const LI = "https://www.linkedin.com/jobs/search/?keywords=engineer";
 const UP = "https://www.upwork.com/nx/search/jobs/?q=react";
@@ -118,12 +118,12 @@ describe("with an account connected", () => {
   });
 
   it("records when the listings last reached WatchDesk", async () => {
-    expect(await ingest.getListingSyncStatus()).toEqual({ lastIngestedAt: null, failed: false });
+    expect(await ingest.getListingSyncStatus()).toEqual({ lastIngestedAt: null, failed: false, queued: 0, dropped: 0 });
 
     await ingest.ingestCheckedListings([{ watchId: watch.id, jobs: [linkedInJob(1)] }]);
 
     expect(listingState()).toEqual({ lastIngestedAt: Date.now(), failed: false });
-    expect(await ingest.getListingSyncStatus()).toEqual({ lastIngestedAt: Date.now(), failed: false });
+    expect(await ingest.getListingSyncStatus()).toEqual({ lastIngestedAt: Date.now(), failed: false, queued: 0, dropped: 0 });
   });
 
   it("sends the whole page again on the next cycle; WatchDesk stores each posting once", async () => {
@@ -420,7 +420,7 @@ describe("with an account connected", () => {
 
     vi.resetModules();
     const restarted = await import("../listing-ingest.js");
-    expect(await restarted.getListingSyncStatus()).toEqual({ lastIngestedAt: at, failed: false });
+    expect(await restarted.getListingSyncStatus()).toEqual({ lastIngestedAt: at, failed: false, queued: 0, dropped: 0 });
     expect((await restarted.ingestCheckedListings([{ watchId: watch.id, jobs: [linkedInJob(2)] }])).status).toBe("ok");
     expect(env.chrome.storage.sync.dump()[LISTING_SYNC_KEY]).toBeUndefined();
     expect(env.chrome.storage.session.dump()[LISTING_SYNC_KEY]).toBeUndefined();
@@ -437,5 +437,483 @@ describe("with an account connected", () => {
     expect(visible).not.toContain(TEST_TOKEN);
     expect(visible).not.toContain("Engineer");
     expect(visible).not.toContain("linkedin.com");
+  });
+
+  it("queues nothing while WatchDesk has not yet said whose the token is", async () => {
+    api.setIngestRoute(api.networkError);
+    const outcome = await settle(ingest.ingestCheckedListings([{ watchId: watch.id, jobs: [linkedInJob(1)] }]));
+
+    expect(outcome).toEqual({ status: "failed", sent: 0, unsent: 1 });
+    expect(env.chrome.storage.local.dump()[LISTING_QUEUE_KEY]).toBeUndefined();
+  });
+});
+
+describe("the retry queue (WD-60)", () => {
+  const ADA = "ada@example.com";
+  let account;
+  let watch;
+  let second;
+
+  const queue = () => env.chrome.storage.local.dump()[LISTING_QUEUE_KEY];
+  const queuedIds = () => (queue()?.items ?? []).map((item) => `${item.watchId === watch.id ? "a" : "b"}:${item.listing.id}`);
+  const sentIds = () => bodies().map((body) => body.listings.map((listing) => listing.id));
+  const cycle = (first = [linkedInJob(1)], other = [linkedInJob(2)]) => [
+    { watchId: watch.id, jobs: first },
+    { watchId: second.id, jobs: other },
+  ];
+  const outage = () => api.setIngestRoute(api.networkError);
+  const recover = () => api.setIngestRoute(() => undefined);
+  const failCycle = async (checked = cycle()) => {
+    outage();
+    const outcome = await settle(ingest.ingestCheckedListings(checked));
+    recover();
+    return outcome;
+  };
+
+  beforeEach(async () => {
+    account = await import("../account-connection.js");
+    await connect();
+    // WatchDesk says whose the token is: ada@example.com.
+    await account.refreshAccount();
+    watch = api.addWatch({ url: LI, label: "Engineers" });
+    second = api.addWatch({ url: UP });
+    await sync.syncWatches();
+  });
+
+  describe("a cycle WatchDesk did not take", () => {
+    it("is kept in chrome.storage.local, under the account it was read for", async () => {
+      const outcome = await failCycle();
+
+      expect(outcome).toEqual({ status: "failed", sent: 0, unsent: 2 });
+      expect(queue()).toEqual({
+        owner: ADA,
+        items: [
+          { watchId: watch.id, listing: linkedInJob(1) },
+          { watchId: second.id, listing: linkedInJob(2) },
+        ],
+        dropped: 0,
+        droppedSeen: false,
+      });
+      expect(env.chrome.storage.sync.dump()[LISTING_QUEUE_KEY]).toBeUndefined();
+      expect(env.chrome.storage.session.dump()[LISTING_QUEUE_KEY]).toBeUndefined();
+      expect(await ingest.getListingSyncStatus()).toEqual({ lastIngestedAt: null, failed: true, queued: 2, dropped: 0 });
+    });
+
+    it("is retried on the next cycle, before that cycle's own listings, and then leaves the queue", async () => {
+      await failCycle();
+      const before = api.ingestCalls().length;
+      vi.setSystemTime(Date.now() + 300000);
+      const outcome = await ingest.ingestCheckedListings(cycle([linkedInJob(3)], [linkedInJob(4)]));
+
+      expect(outcome).toEqual({ status: "ok", sent: 4, unsent: 0 });
+      expect(sentIds().slice(before)).toEqual([["401"], ["402"], ["403"], ["404"]]);
+      expect(api.listings.map((row) => row.listing.id).sort()).toEqual(["401", "402", "403", "404"]);
+      expect(queue()).toBeUndefined();
+      expect(listingState()).toEqual({ lastIngestedAt: Date.now(), failed: false });
+    });
+
+    it("is retried even when the next cycle read nothing", async () => {
+      await failCycle();
+      const outcome = await ingest.ingestCheckedListings([]);
+
+      expect(outcome).toEqual({ status: "ok", sent: 2, unsent: 0 });
+      expect(api.listings).toHaveLength(2);
+      expect(queue()).toBeUndefined();
+    });
+
+    it.each([
+      ["a 5xx", () => api.json(503, { error: "Something went wrong." })],
+      ["a 429 that asks for a long wait", () => api.json(429, { error: "Slow down." }, { "Retry-After": "60" })],
+      ["a request that never answers", (request) => api.hang(request)],
+    ])("is queued after %s too", async (_name, answer) => {
+      api.setIngestRoute(answer);
+      await settle(ingest.ingestCheckedListings(cycle()));
+
+      expect(queuedIds()).toEqual(["a:401", "b:402"]);
+    });
+
+    it("queues only what was not sent", async () => {
+      let calls = 0;
+      api.setIngestRoute(() => (++calls > 1 ? api.json(500, {}) : undefined));
+      const outcome = await settle(ingest.ingestCheckedListings(cycle()));
+
+      expect(outcome).toEqual({ status: "failed", sent: 1, unsent: 1 });
+      expect(queuedIds()).toEqual(["b:402"]);
+    });
+
+    it("stays queued through a second failure, and the cycle's own listings join it", async () => {
+      await failCycle();
+      const outcome = await failCycle(cycle([linkedInJob(3)], []));
+
+      // The queued request for the first watch failed; nothing after it was tried.
+      expect(outcome).toEqual({ status: "failed", sent: 0, unsent: 3 });
+      expect(queuedIds()).toEqual(["a:401", "b:402", "a:403"]);
+    });
+  });
+
+  describe("coalescing", () => {
+    it("holds each listing once per watch: a later reading replaces the older copy", async () => {
+      await failCycle(cycle([linkedInJob(1), linkedInJob(2)], [linkedInJob(1)]));
+      const newer = { ...linkedInJob(2), title: "Engineer 2 (updated)" };
+      await failCycle(cycle([newer, linkedInJob(3)], []));
+
+      expect(queuedIds()).toEqual(["a:401", "b:401", "a:402", "a:403"]);
+      expect(queue().items[2].listing.title).toBe("Engineer 2 (updated)");
+    });
+
+    it("sends a watch's queued listings together, the watch with the oldest listing first", async () => {
+      await failCycle(cycle([linkedInJob(1)], [linkedInJob(2)]));
+      await failCycle(cycle([linkedInJob(3)], []));
+      const before = api.ingestCalls().length;
+      await ingest.ingestCheckedListings([]);
+
+      expect(bodies().slice(before)).toEqual([
+        { watchId: watch.id, listings: [linkedInJob(1), linkedInJob(3)] },
+        { watchId: second.id, listings: [linkedInJob(2)] },
+      ]);
+    });
+
+    it("takes a queued copy out when the cycle's own reading of it got through", async () => {
+      // Twelve watches queued: two are beyond what one cycle retries.
+      const more = Array.from({ length: 10 }, (_unused, n) => api.addWatch({ url: `${LI}&n=${n}` }));
+      await sync.syncWatches();
+      const all = [watch, second, ...more];
+      await failCycle(all.map((w) => ({ watchId: w.id, jobs: [linkedInJob(1)] })));
+      const last = all.at(-1);
+      await ingest.ingestCheckedListings([{ watchId: last.id, jobs: [linkedInJob(1)] }]);
+
+      expect(queue().items.map((item) => item.watchId)).toEqual([all.at(-2).id]);
+    });
+  });
+
+  describe("how much a cycle retries", () => {
+    it("sends at most 10 queued requests a cycle and the rest on the next", async () => {
+      const more = Array.from({ length: 10 }, (_unused, n) => api.addWatch({ url: `${LI}&n=${n}` }));
+      await sync.syncWatches();
+      await failCycle([watch, second, ...more].map((w) => ({ watchId: w.id, jobs: [linkedInJob(1)] })));
+      expect(queue().items).toHaveLength(12);
+      const before = api.ingestCalls().length;
+
+      const first = await ingest.ingestCheckedListings([]);
+      expect(ingest.QUEUE_MAX_REQUESTS_PER_CYCLE).toBe(10);
+      expect(first).toEqual({ status: "ok", sent: 10, unsent: 0 });
+      expect(api.ingestCalls()).toHaveLength(before + 10);
+      expect(queue().items).toHaveLength(2);
+      // Nothing failed, but not everything is there yet.
+      expect(await ingest.getListingSyncStatus()).toEqual({ lastIngestedAt: null, failed: false, queued: 2, dropped: 0 });
+
+      const next = await ingest.ingestCheckedListings([]);
+      expect(next).toEqual({ status: "ok", sent: 2, unsent: 0 });
+      expect(queue()).toBeUndefined();
+      expect(listingState()).toEqual({ lastIngestedAt: Date.now(), failed: false });
+    });
+
+    it("splits a watch's queued listings into requests of at most 200", async () => {
+      await failCycle([{ watchId: watch.id, jobs: Array.from({ length: 450 }, (_unused, n) => linkedInJob(n)) }]);
+      const before = api.ingestCalls().length;
+      await ingest.ingestCheckedListings([]);
+
+      expect(
+        bodies()
+          .slice(before)
+          .map((body) => body.listings.length),
+      ).toEqual([200, 200, 50]);
+      expect(api.listings).toHaveLength(450);
+    });
+
+    it("stops at the first queued request that fails, and does not send the cycle's own after it", async () => {
+      await failCycle();
+      const before = api.ingestCalls().length;
+      await failCycle(cycle([linkedInJob(5)], [linkedInJob(6)]));
+
+      // The four attempts of one request, all for the oldest queued batch.
+      expect(sentIds().slice(before)).toEqual([["401"], ["401"], ["401"], ["401"]]);
+    });
+
+    it("two cycles at once send the queue once", async () => {
+      await failCycle([{ watchId: watch.id, jobs: [linkedInJob(1)] }]);
+      const before = api.ingestCalls().length;
+      api.setIngestRoute(
+        () => new Promise((resolve) => setTimeout(() => resolve(api.json(200, { received: 1, inserted: [] })), 1000)),
+      );
+      const alarm = ingest.ingestCheckedListings([]);
+      const checkNow = ingest.ingestCheckedListings([]);
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(await alarm).toEqual({ status: "ok", sent: 1, unsent: 0 });
+      expect(await checkNow).toEqual({ status: "nothing-to-send", sent: 0, unsent: 0 });
+      expect(api.ingestCalls()).toHaveLength(before + 1);
+    });
+  });
+
+  describe("delivery", () => {
+    it("removes a listing only after WatchDesk took it: a worker stopped in between sends it again, harmlessly", async () => {
+      await failCycle([{ watchId: watch.id, jobs: [linkedInJob(1)] }]);
+      // WatchDesk answers 200, and the worker dies before the queue is rewritten.
+      env.chrome.storage.local.remove.mockRejectedValueOnce(new Error("worker stopped"));
+      await ingest.ingestCheckedListings([]);
+      expect(api.listings).toHaveLength(1);
+      expect(queuedIds()).toEqual(["a:401"]);
+
+      vi.resetModules();
+      const restarted = await import("../listing-ingest.js");
+      expect(await restarted.ingestCheckedListings([])).toEqual({ status: "ok", sent: 1, unsent: 0 });
+      expect(api.listings).toHaveLength(1);
+      expect(queue()).toBeUndefined();
+    });
+
+    it("a queued batch WatchDesk refuses (400) is dropped and recorded, never sent again", async () => {
+      await failCycle();
+      api.setIngestRoute((request) => (request.body.watchId === watch.id ? api.json(400, { error: "No." }) : undefined));
+      const outcome = await ingest.ingestCheckedListings([]);
+
+      expect(outcome).toEqual({ status: "failed", sent: 1, unsent: 0 });
+      expect(queue()).toBeUndefined();
+      expect(listingState()).toEqual({ lastIngestedAt: null, failed: true });
+
+      const before = api.ingestCalls().length;
+      expect((await ingest.ingestCheckedListings([])).status).toBe("nothing-to-send");
+      expect(api.ingestCalls()).toHaveLength(before);
+    });
+
+    it("a refused batch of the cycle itself is not queued", async () => {
+      api.setIngestRoute(() => api.json(400, { error: "No." }));
+      await ingest.ingestCheckedListings(cycle());
+
+      expect(queue()).toBeUndefined();
+    });
+
+    it("a watch that is gone (404) loses its queued listings, all of them; the others still go", async () => {
+      await failCycle(cycle(Array.from({ length: 250 }, (_unused, n) => linkedInJob(n)), [linkedInJob(1)]));
+      api.watches.splice(0, 1);
+      const before = api.ingestCalls().length;
+      const outcome = await ingest.ingestCheckedListings([]);
+
+      expect(outcome).toEqual({ status: "ok", sent: 1, unsent: 0 });
+      // One request for the deleted watch (its other 50 are not sent), one for the other.
+      expect(
+        bodies()
+          .slice(before)
+          .map((body) => body.watchId),
+      ).toEqual([watch.id, second.id]);
+      expect(queue()).toBeUndefined();
+      expect(listingState()).toEqual({ lastIngestedAt: Date.now(), failed: false });
+    });
+  });
+
+  describe("whose listings they are", () => {
+    const refuseToken = async (checked = cycle()) => {
+      api.setIngestRoute(() => api.json(401, { error: "Sign in to continue." }));
+      const outcome = await ingest.ingestCheckedListings(checked);
+      recover();
+      return outcome;
+    };
+    const reconnectAs = async (email) => {
+      api.setCurrent(() => api.json(200, { account: { email, displayName: null }, device: { id: "d2", label: "Chrome" } }));
+      await connect();
+      await account.refreshAccount();
+      await sync.syncWatches();
+    };
+
+    it("a refused token (401) keeps the queue and adds what the cycle could not send", async () => {
+      await failCycle([{ watchId: watch.id, jobs: [linkedInJob(1)] }]);
+      const outcome = await refuseToken(cycle([linkedInJob(3)], [linkedInJob(4)]));
+
+      expect(outcome).toEqual({ status: "not-connected", sent: 0, unsent: 0 });
+      expect(env.chrome.storage.local.dump()[TOKEN_KEY]).toBeUndefined();
+      expect(queue().owner).toBe(ADA);
+      expect(queuedIds()).toEqual(["a:401", "a:403", "b:404"]);
+    });
+
+    it("sends nothing and changes nothing while not connected", async () => {
+      await refuseToken();
+      const before = api.ingestCalls().length;
+      const held = queue();
+
+      expect(await ingest.ingestCheckedListings(cycle())).toEqual({ status: "not-connected", sent: 0, unsent: 0 });
+      expect(api.ingestCalls()).toHaveLength(before);
+      expect(queue()).toEqual(held);
+    });
+
+    it("is sent after reconnecting to the same account, however the address is written", async () => {
+      await refuseToken();
+      await reconnectAs("  Ada@Example.com ");
+      const outcome = await ingest.ingestCheckedListings([]);
+
+      expect(outcome).toEqual({ status: "ok", sent: 2, unsent: 0 });
+      expect(api.listings.map((row) => row.listing.id)).toEqual(["401", "402"]);
+      expect(queue()).toBeUndefined();
+    });
+
+    it("is cleared, unsent, when a different account connects", async () => {
+      await refuseToken();
+      const before = api.ingestCalls().length;
+      await reconnectAs("grace@example.com");
+
+      expect(queue()).toBeUndefined();
+      expect((await ingest.ingestCheckedListings([])).status).toBe("nothing-to-send");
+      expect(api.ingestCalls()).toHaveLength(before);
+      expect(api.listings).toHaveLength(0);
+    });
+
+    it("is not sent to another account even if it is still in storage", async () => {
+      await refuseToken();
+      const held = queue();
+      const before = api.ingestCalls().length;
+      await connect();
+      await env.chrome.storage.local.set({ [ACCOUNT_KEY]: { email: "grace@example.com" } });
+      await sync.syncWatches();
+
+      expect(await ingest.getListingSyncStatus()).toMatchObject({ queued: 0, dropped: 0 });
+      expect((await ingest.ingestCheckedListings([])).status).toBe("nothing-to-send");
+      expect(api.ingestCalls()).toHaveLength(before);
+      expect(queue()).toEqual(held);
+    });
+
+    it("waits, unsent, until WatchDesk has said whose the new token is", async () => {
+      await refuseToken();
+      const before = api.ingestCalls().length;
+      await connect();
+      await sync.syncWatches();
+
+      expect((await ingest.ingestCheckedListings([])).status).toBe("nothing-to-send");
+      expect(api.ingestCalls()).toHaveLength(before);
+      expect(queuedIds()).toEqual(["a:401", "b:402"]);
+    });
+
+    it("stops a cycle when another account is connected while it is sending, and leaves that account no queue", async () => {
+      api.setIngestRoute(() => {
+        env.chrome.storage.local.set({ [ACCOUNT_KEY]: { email: "grace@example.com" } });
+      });
+      const outcome = await ingest.ingestCheckedListings(cycle());
+
+      expect(outcome).toEqual({ status: "not-connected", sent: 1, unsent: 0 });
+      expect(api.ingestCalls()).toHaveLength(1);
+      expect(queue()).toBeUndefined();
+    });
+
+    it("a cycle that fails after another account connected leaves that account's queue alone", async () => {
+      const theirs = { owner: "grace@example.com", items: [{ watchId: "w", listing: { id: "1" } }], dropped: 0, droppedSeen: false };
+      api.setIngestRoute(() => {
+        env.chrome.storage.local.set({ [ACCOUNT_KEY]: { email: "grace@example.com" }, [LISTING_QUEUE_KEY]: theirs });
+        return api.json(500, {});
+      });
+      await settle(ingest.ingestCheckedListings(cycle()));
+
+      expect(queue()).toEqual(theirs);
+    });
+  });
+
+  describe("the cap", () => {
+    const many = (count, from = 0) => Array.from({ length: count }, (_unused, n) => linkedInJob(from + n));
+
+    it("drops the oldest listings over 2,000 and counts them", async () => {
+      await failCycle([{ watchId: watch.id, jobs: many(1500) }]);
+      expect(await ingest.getListingSyncStatus()).toMatchObject({ queued: 1500, dropped: 0 });
+      await failCycle([{ watchId: watch.id, jobs: many(600, 1500) }]);
+
+      expect(ingest.QUEUE_MAX_LISTINGS).toBe(2000);
+      expect(queue().items).toHaveLength(2000);
+      expect(queue().items[0].listing.id).toBe(linkedInJob(100).id);
+      expect(queue().items.at(-1).listing.id).toBe(linkedInJob(2099).id);
+      expect(queue().dropped).toBe(100);
+      expect(await ingest.getListingSyncStatus()).toEqual({ lastIngestedAt: null, failed: true, queued: 2000, dropped: 100 });
+    });
+
+    it("keeps the queue under 2 MB when the listings are unusually long", async () => {
+      const long = (n) => ({
+        ...linkedInJob(n),
+        title: "t".repeat(500),
+        url: `https://www.linkedin.com/jobs/view/${n}/?${"q".repeat(1990)}`,
+        salaryRaw: "s".repeat(200),
+        postedRaw: "p".repeat(100),
+      });
+      await failCycle([{ watchId: watch.id, jobs: Array.from({ length: 900 }, (_unused, n) => long(n)) }]);
+
+      const bytes = new TextEncoder().encode(JSON.stringify(queue().items)).length;
+      expect(bytes).toBeLessThanOrEqual(ingest.QUEUE_MAX_BYTES);
+      expect(bytes).toBeGreaterThan(ingest.QUEUE_MAX_BYTES * 0.99);
+      expect(queue().items.length).toBeLessThan(900);
+      expect(queue().dropped).toBe(900 - queue().items.length);
+      expect(queue().items.at(-1).listing.id).toBe(long(899).id);
+    });
+
+    it("drains a full queue in one cycle once WatchDesk is back", async () => {
+      await failCycle([{ watchId: watch.id, jobs: many(2100) }]);
+      const outcome = await ingest.ingestCheckedListings([]);
+
+      expect(outcome).toEqual({ status: "ok", sent: 10, unsent: 0 });
+      expect(api.listings).toHaveLength(2000);
+      expect(listingState()).toEqual({ lastIngestedAt: Date.now(), failed: false });
+    });
+
+    describe("the dropped count", () => {
+      beforeEach(async () => {
+        await failCycle([{ watchId: watch.id, jobs: many(2100) }]);
+      });
+      const dropped = async () => (await ingest.getListingSyncStatus()).dropped;
+
+      it("outlives the recovery until the user has seen it", async () => {
+        await ingest.ingestCheckedListings([]);
+        await ingest.ingestCheckedListings(cycle());
+        expect(await dropped()).toBe(100);
+        expect(queue()).toEqual({ owner: ADA, items: [], dropped: 100, droppedSeen: false });
+
+        await ingest.acknowledgeDroppedListings();
+        expect(await dropped()).toBe(0);
+        expect(queue()).toBeUndefined();
+      });
+
+      it("seen during the outage, stays until everything has got through", async () => {
+        await ingest.acknowledgeDroppedListings();
+        expect(await dropped()).toBe(100);
+        await failCycle([]);
+        expect(await dropped()).toBe(100);
+
+        await ingest.ingestCheckedListings([]);
+        expect(await dropped()).toBe(0);
+        expect(queue()).toBeUndefined();
+      });
+
+      it("seen once, is shown again when more are dropped", async () => {
+        await ingest.acknowledgeDroppedListings();
+        await failCycle([{ watchId: watch.id, jobs: many(50, 5000) }]);
+        expect(queue()).toMatchObject({ dropped: 150, droppedSeen: false });
+
+        await ingest.ingestCheckedListings([]);
+        expect(await dropped()).toBe(150);
+      });
+
+      it("is not shown to another account, which cannot acknowledge it either", async () => {
+        await env.chrome.storage.local.set({ [ACCOUNT_KEY]: { email: "grace@example.com" } });
+        expect(await dropped()).toBe(0);
+        await ingest.acknowledgeDroppedListings();
+        expect(queue().dropped).toBe(100);
+      });
+
+      it("acknowledging never throws, and does nothing with no account connected", async () => {
+        await env.chrome.storage.local.remove(TOKEN_KEY);
+        const held = queue();
+        await expect(ingest.acknowledgeDroppedListings()).resolves.toBeUndefined();
+        expect(queue()).toEqual(held);
+
+        env.chrome.storage.local.get.mockRejectedValue(new Error("storage is gone"));
+        await expect(ingest.acknowledgeDroppedListings()).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  it("never logs, and shows the popup counts only: no token, no listing", async () => {
+    const logs = ["log", "info", "warn", "error", "debug"].map((level) => vi.spyOn(console, level).mockImplementation(() => {}));
+    const failed = await failCycle();
+    const status = await ingest.getListingSyncStatus();
+    const sent = await ingest.ingestCheckedListings([]);
+
+    for (const log of logs) expect(log).not.toHaveBeenCalled();
+    const visible = JSON.stringify([failed, status, sent, await ingest.getListingSyncStatus()]);
+    expect(visible).not.toContain(TEST_TOKEN);
+    expect(visible).not.toContain("Engineer");
+    expect(visible).not.toContain("linkedin.com");
+    expect(visible).not.toContain(ADA);
   });
 });

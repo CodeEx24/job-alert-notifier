@@ -482,6 +482,85 @@ describe("the connected state", () => {
     expect(env.chrome.storage.local.dump()[mod.LISTING_SYNC_KEY]).toBeUndefined();
   });
 
+  describe("the queue of unsent listings (WD-60)", () => {
+    const queueOf = (owner) => ({ owner, items: [{ watchId: "w", listing: { id: "1" } }], dropped: 0, droppedSeen: false });
+    const stored = () => env.chrome.storage.local.dump()[mod.LISTING_QUEUE_KEY];
+    const answerAs = (email) =>
+      api.setCurrent(() => api.json(200, { account: { email, displayName: null }, device: { id: "d", label: "Chrome" } }));
+
+    it("names the connected account by its email, trimmed and lower-cased", async () => {
+      expect(await mod.getAccountOwner()).toBeNull();
+      answerAs("  Ada@Example.COM ");
+      await mod.refreshAccount();
+      expect(await mod.getAccountOwner()).toBe("ada@example.com");
+
+      await env.chrome.storage.local.remove(mod.TOKEN_KEY);
+      expect(await mod.getAccountOwner()).toBeNull();
+    });
+
+    it("names nobody for an account without an email", async () => {
+      answerAs(null);
+      await mod.refreshAccount();
+      expect(await mod.getAccountOwner()).toBeNull();
+    });
+
+    it("stays when the token is refused", async () => {
+      await env.chrome.storage.local.set({ [mod.LISTING_QUEUE_KEY]: queueOf("ada@example.com") });
+      api.setCurrent(() => api.json(401, { error: "Sign in to continue." }));
+      await mod.refreshAccount();
+
+      expect(env.chrome.storage.local.dump()[mod.TOKEN_KEY]).toBeUndefined();
+      expect(stored()).toEqual(queueOf("ada@example.com"));
+    });
+
+    it("stays when the connected account is the one it belongs to", async () => {
+      await env.chrome.storage.local.set({ [mod.LISTING_QUEUE_KEY]: queueOf("ada@example.com") });
+      answerAs("Ada@example.com");
+      await mod.refreshAccount();
+
+      expect(stored()).toEqual(queueOf("ada@example.com"));
+    });
+
+    it("is removed as soon as the connected account is a different one, or has no email", async () => {
+      await env.chrome.storage.local.set({ [mod.LISTING_QUEUE_KEY]: queueOf("grace@example.com") });
+      await mod.refreshAccount();
+      expect(stored()).toBeUndefined();
+
+      await env.chrome.storage.local.set({ [mod.LISTING_QUEUE_KEY]: queueOf("ada@example.com") });
+      answerAs(null);
+      await mod.refreshAccount();
+      expect(stored()).toBeUndefined();
+    });
+
+    it("stays while WatchDesk cannot say whose the token is", async () => {
+      await env.chrome.storage.local.set({ [mod.LISTING_QUEUE_KEY]: queueOf("grace@example.com") });
+      api.setCurrent(api.networkError);
+      const pending = mod.refreshAccount();
+      await advance(60000);
+      await pending;
+
+      expect(stored()).toEqual(queueOf("grace@example.com"));
+    });
+
+    it("a new pairing keeps the same account's queue and removes another's", async () => {
+      await env.chrome.storage.local.remove(mod.TOKEN_KEY);
+      await env.chrome.storage.local.set({ [mod.LISTING_QUEUE_KEY]: queueOf("ada@example.com") });
+      await mod.startConnecting();
+      api.queuePoll(api.approved);
+      await advance(3000);
+      expect(env.chrome.storage.local.dump()[mod.TOKEN_KEY]).toBe(TEST_TOKEN);
+      expect(stored()).toEqual(queueOf("ada@example.com"));
+
+      await env.chrome.storage.local.remove(mod.TOKEN_KEY);
+      answerAs("grace@example.com");
+      await mod.startConnecting();
+      api.queuePoll(api.approved);
+      await advance(3000);
+      expect(env.chrome.storage.local.dump()[mod.TOKEN_KEY]).toBe(TEST_TOKEN);
+      expect(stored()).toBeUndefined();
+    });
+  });
+
   it("does not start a pairing while connected", async () => {
     const state = await mod.startConnecting();
     expect(state.status).toBe("connected");

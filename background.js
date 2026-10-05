@@ -44,7 +44,7 @@ import {
   removeAccountWatch,
   forgetKnownWatches,
 } from "./watch-sync.js";
-import { ingestCheckedListings, getListingSyncStatus } from "./listing-ingest.js";
+import { ingestCheckedListings, getListingSyncStatus, acknowledgeDroppedListings } from "./listing-ingest.js";
 
 const ALARM_NAME = "check-jobs";
 const OFFSCREEN_URL = "offscreen.html";
@@ -1148,6 +1148,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         // state. Answers { mode: "local" } and sends nothing when no
         // account is connected.
         sendResponse(await syncWatches());
+        break;
+      }
+      case "listing-drops-seen": {
+        // WD-60: the popup has shown how many queued listings were dropped.
+        // Answered first: this waits its turn behind a cycle that is
+        // sending.
+        sendResponse({ ok: true });
+        await acknowledgeDroppedListings();
         break;
       }
       case "ack-update": {
