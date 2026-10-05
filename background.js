@@ -44,7 +44,7 @@ import {
   updateAccountWatch,
   setAccountWatchesEnabled,
   removeAccountWatch,
-  forgetKnownWatches,
+  importAccountWatches,
 } from "./watch-sync.js";
 import { ingestCheckedListings, getListingSyncStatus, acknowledgeDroppedListings } from "./listing-ingest.js";
 import {
@@ -240,7 +240,13 @@ async function getSettings() {
   // has no watches.
   const storedWatches =
     watches && watches.length ? watches : (await hasSyncedAccountWatches()) ? [] : [defaultWatch()];
-  const { migrated: migratedWatches, changed } = migrateWatchUrls(storedWatches);
+  // WD-111: a connected account's URLs are WatchDesk's, which normalises
+  // them when a watch is saved; they are used as stored. Rewriting them here
+  // would be a write to the copy behind watch-sync.js's back, undone by the
+  // next sync and made again on the next read.
+  const { migrated: migratedWatches, changed } = (await usesAccountWatches())
+    ? { migrated: storedWatches, changed: false }
+    : migrateWatchUrls(storedWatches);
   if (changed) {
     // Fire-and-forget persist — no need to make the caller wait on this.
     chrome.storage.sync.set({ watches: migratedWatches }).catch((err) =>
@@ -881,11 +887,32 @@ async function importSettings(data) {
     return { ok: false, error: "No valid watches found in that file." };
   }
 
+  // WD-54, WD-111: with an account connected the file's watches are added
+  // to it, and that comes first. Each one is matched to the account's by URL
+  // or uploaded, and the account's other watches stay in the list. If
+  // WatchDesk cannot say what the account has, nothing is imported: not the
+  // watches, which would be shown as the list without being saved, and not
+  // the settings or the fresh run state either, so the file can simply be
+  // imported again later.
+  const accountWatches = await usesAccountWatches();
+  if (accountWatches) {
+    const added = await importAccountWatches(importedWatches);
+    if (!added.ok) {
+      // The sync line now says why (offline), if a popup is open.
+      try {
+        await chrome.runtime.sendMessage({ type: "watch-sync-changed", watchSync: await getSyncStatus() });
+      } catch {
+        // No popup open.
+      }
+      return added;
+    }
+  }
+
   const intervalMinutes = [1, 5, 15, 30].includes(data.intervalMinutes) ? data.intervalMinutes : 5;
   const soundId = typeof data.soundId === "string" ? data.soundId : "chime";
   const notificationsMuted = Boolean(data.notificationsMuted);
 
-  const settingsToSave = { watches: importedWatches, intervalMinutes, soundId, notificationsMuted };
+  const settingsToSave = { ...(accountWatches ? {} : { watches: importedWatches }), intervalMinutes, soundId, notificationsMuted };
   // Only touch the title filter if the imported file actually has one — an
   // older backup (from before this feature existed) shouldn't silently wipe
   // out a filter the user has since configured.
@@ -901,14 +928,6 @@ async function importSettings(data) {
   await saveRunState({ seenIds: {}, lastChecked: {}, lastResult: {}, badgeCount: 0, feed: [], consecutiveErrors: {}, lastRunAt: null, lastGap: null });
   await updateBadge(0);
   await scheduleAlarm();
-
-  // WD-54: with an account connected, the imported watches are added to
-  // it. Each one is matched to the account's by URL or uploaded, and the
-  // account's other watches come back into the list.
-  if (await usesAccountWatches()) {
-    await forgetKnownWatches();
-    await syncWatches();
-  }
 
   return { ok: true, imported: importedWatches.length, skipped };
 }
@@ -1119,8 +1138,12 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 });
 
 chrome.runtime.onInstalled.addListener(async (details) => {
-  const { watches, intervalMinutes, soundId, notificationsMuted } = await getSettings();
-  await saveSettings({ watches, intervalMinutes, soundId, notificationsMuted });
+  // WD-111: this used to read the settings and write them straight back,
+  // which stored the defaults on a fresh install. Anything written to
+  // chrome.storage.sync between that read and that write (the user's first
+  // change, Chrome sync delivering another computer's settings, a connected
+  // account's watch list) was overwritten with what had been read. Nothing
+  // needs the defaults stored: getSettings() supplies them on every read.
   await scheduleAlarm();
 
   // Chrome's own reliable signal that this load is a reload of an EXISTING

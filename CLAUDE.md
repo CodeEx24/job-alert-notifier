@@ -53,7 +53,11 @@ Reference documents in the WatchDesk repository:
   the last-synced copy that the check cycle reads; every change to it goes
   through `watch-sync.js`, which calls the API first and refuses the change
   when WatchDesk is unreachable. Never write `watches` directly in connected
-  mode, and never change what an unconnected browser does.
+  mode, and never change what an unconnected browser does. That covers the
+  quiet writers too (WD-111): `getSettings()`'s URL migration is skipped for
+  a connected account (its URLs are WatchDesk's), Import adds the file's
+  watches through `importAccountWatches()` and imports nothing when WatchDesk
+  does not answer, and the install handler writes no settings at all.
 - **Listings go to WatchDesk after the check, never in it** (WD-59).
   `listing-ingest.js` posts what a cycle read once `runAllChecks()` has
   saved its state and raised its notifications, badge and sound; it can
@@ -115,7 +119,7 @@ Reference documents in the WatchDesk repository:
 | `config.js` | The WatchDesk origin (production / development) |
 | `watchdesk-api.js` | The only WatchDesk API client (`requestJson`, the authenticated `authorizedRequest` with retries (WD-44), one function per route, including the four watch routes (WD-54), listing ingestion (WD-59) and reading / replacing the account's settings (WD-71)) |
 | `account-connection.js` | Device pairing, token storage, connected state (WD-42); `captureConnection()`, the handle that binds a request to one token (WD-110), and `isCurrentConnection()` (WD-71) |
-| `watch-sync.js` | The watch list of a connected browser: sync with the account, first-connection upload, add / rename / pause / remove through the API (WD-54) |
+| `watch-sync.js` | The watch list of a connected browser: sync with the account, first-connection upload, add / rename / pause / remove through the API (WD-54), and adding an imported backup's watches (WD-111) |
 | `watcher-state.js` | Whether the periodic check is running or paused, kept in this browser, and reporting it to the connected account's settings (WD-71) |
 | `popup.html` / `popup.css` / `popup.js` | The popup |
 | `popup-watcher.js` | The popup's Start Watching / Pause Watching control (WD-71) |

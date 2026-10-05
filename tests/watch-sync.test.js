@@ -302,19 +302,124 @@ describe("the first sync after connecting, with watches already in this browser"
     expect(storedWatches()).toEqual(api.watches.map(stored));
   });
 
-  it("treats every watch as this browser's own again after an import", async () => {
+});
+
+describe("importing a backup's watches into the account (WD-54, WD-111)", () => {
+  beforeEach(connect);
+
+  it("treats every imported watch as this browser's own: a server id deleted on the web is uploaded again", async () => {
     const onWeb = api.addWatch({ url: OJ });
     await sync.syncWatches();
-
-    // An import replaced the list; one imported watch reuses a server id
-    // that has since been deleted on the web.
     api.watches.length = 0;
-    await storeWatches([local(onWeb.id, OJ), local("w_9", LI)]);
-    await sync.forgetKnownWatches();
-    await sync.syncWatches();
+
+    expect(await sync.importAccountWatches([local(onWeb.id, OJ), local("w_9", LI)])).toEqual({ ok: true });
 
     expect(api.watches.map((w) => w.url)).toEqual([OJ, LI]);
     expect(storedWatches()).toEqual(api.watches.map(stored));
+  });
+
+  it("uploads what the account lacks, matches the rest by URL, and keeps the account's other watches", async () => {
+    const mine = api.addWatch({ url: OJ, label: "On WatchDesk" });
+    const other = api.addWatch({ url: UP, label: "Also on WatchDesk" });
+    await sync.syncWatches();
+
+    expect(await sync.importAccountWatches([local("w_1", OJ), local("w_2", LI, { enabled: false })])).toEqual({ ok: true });
+
+    expect(api.watchCalls("POST").map((r) => r.body)).toEqual([{ url: LI, label: "Label w_2", enabled: false }]);
+    expect(storedWatches().map((w) => [w.id, w.url, w.label])).toEqual([
+      [mine.id, OJ, "On WatchDesk"],
+      [other.id, UP, "Also on WatchDesk"],
+      [api.watches[2].id, LI, "Label w_2"],
+    ]);
+    expect(syncState()).toMatchObject({ serverIds: api.watches.map((w) => w.id), rejectedIds: [], offline: false });
+  });
+
+  it("drops a watch that was only in this browser and is not in the file, as an import always has", async () => {
+    await storeWatches([local("w_1", "https://example.com/jobs")]);
+    await sync.syncWatches();
+    expect(storedWatches().map((w) => w.id)).toEqual(["w_1"]);
+
+    await sync.importAccountWatches([local("w_2", LI)]);
+
+    expect(storedWatches()).toEqual(api.watches.map(stored));
+    expect(syncState().rejectedIds).toEqual([]);
+  });
+
+  it("imports nothing while WatchDesk cannot be reached: the copy and what is known of the account stay", async () => {
+    api.addWatch({ url: OJ, label: "Synced earlier" });
+    await sync.syncWatches();
+    const before = { watches: storedWatches(), state: syncState() };
+    api.setWatchRoute(api.networkError);
+    env.chrome.storage.sync.set.mockClear();
+
+    expect(await sync.importAccountWatches([local("w_9", LI)])).toEqual({ ok: false, error: `Nothing was imported. ${OFFLINE}` });
+
+    expect(storedWatches()).toEqual(before.watches);
+    expect(env.chrome.storage.sync.set).not.toHaveBeenCalled();
+    expect(syncState()).toEqual({ ...before.state, offline: true });
+    expect(api.watchCalls("POST")).toHaveLength(0);
+    expect(await sync.getWatchSyncStatus()).toMatchObject({ offline: true, localOnly: 0 });
+
+    // And the next sync finds the account as it was: nothing to upload.
+    api.setWatchRoute(() => undefined);
+    await sync.syncWatches();
+    expect(api.watches).toHaveLength(1);
+    expect(storedWatches()).toEqual(before.watches);
+  });
+
+  it.each([
+    [429, { error: "Too many requests." }, "Nothing was imported. WatchDesk is busy. Try again in a moment."],
+    [500, { error: "Something went wrong." }, "Nothing was imported. WatchDesk couldn't do that just now. Try again."],
+  ])("imports nothing when WatchDesk answers the list with %i", async (status, body, error) => {
+    await storeWatches([local("w_1", OJ)]);
+    await sync.syncWatches();
+    const before = storedWatches();
+    api.setWatchRoute(() => api.json(status, body));
+
+    expect(await sync.importAccountWatches([local("w_9", LI)])).toEqual({ ok: false, error });
+    expect(storedWatches()).toEqual(before);
+  });
+
+  it("on a 401, imports nothing and the token is gone", async () => {
+    await storeWatches([local("w_1", OJ)]);
+    await sync.syncWatches();
+    const before = storedWatches();
+    api.setWatchRoute(() => api.json(401, { error: "Sign in to continue." }));
+
+    expect(await sync.importAccountWatches([local("w_9", LI)])).toEqual({
+      ok: false,
+      error: "Nothing was imported. This browser was disconnected from your WatchDesk account, so nothing was changed.",
+    });
+    expect(storedWatches()).toEqual(before);
+    expect(env.chrome.storage.local.dump()[TOKEN_KEY]).toBeUndefined();
+  });
+
+  it("a watch WatchDesk refuses stays in this browser and is counted as only here", async () => {
+    await sync.syncWatches();
+
+    expect(await sync.importAccountWatches([local("w_1", "https://example.com/jobs"), local("w_2", LI)])).toEqual({ ok: true });
+
+    expect(storedWatches().map((w) => w.id)).toEqual([api.watches[0].id, "w_1"]);
+    expect(await sync.getWatchSyncStatus()).toMatchObject({ offline: false, localOnly: 1 });
+  });
+
+  it("waits its turn behind a sync that is running", async () => {
+    api.addWatch({ url: OJ });
+    const syncing = sync.syncWatches();
+    const importing = sync.importAccountWatches([local("w_9", LI)]);
+    await Promise.all([syncing, importing]);
+
+    expect(api.watches.map((w) => w.url)).toEqual([OJ, LI]);
+    expect(storedWatches()).toEqual(api.watches.map(stored));
+  });
+
+  it("with no account connected, sends nothing and changes nothing", async () => {
+    await env.chrome.storage.local.remove(TOKEN_KEY);
+    await storeWatches([local("w_1", OJ)]);
+
+    expect((await sync.importAccountWatches([local("w_9", LI)])).ok).toBe(false);
+    expect(api.fetch).not.toHaveBeenCalled();
+    expect(storedWatches()).toEqual([local("w_1", OJ)]);
   });
 });
 

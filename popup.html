@@ -124,7 +124,9 @@
         <button id="reset-extension" class="secondary danger-hover settings-full-width-btn">
           Reset Extension…
         </button>
-        <p class="hint">
+        <!-- These words are for a browser with no account connected; with
+             one, popup.js says the watches are kept (WD-111). -->
+        <p class="hint" id="reset-extension-hint">
           Clears every watch, the feed, and all settings back to defaults.
           Can't be undone — export a backup first if you might want any of
           this again.

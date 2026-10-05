@@ -62,6 +62,22 @@ export const MODES = [
 // Against another copy of the extension there is only the first.
 export const TESTED_MODES = REFERENCE_ROOT ? MODES.slice(0, 1) : MODES;
 
+// How WatchDesk stores the URL of a watch it is sent (WD-111): its own copy
+// of the LinkedIn rule, `normalizeLinkedInUrl` in the WatchDesk repository's
+// lib/sites.ts, written out here because that is the server's code, not the
+// extension's. Connected, the canonical form of a watch's URL is WatchDesk's
+// doing; the extension stores what WatchDesk answers.
+export function asWatchDeskSaves(rawUrl) {
+  if (!URL.canParse(rawUrl)) return rawUrl;
+  const url = new URL(rawUrl);
+  if (url.hostname !== "linkedin.com" && !url.hostname.endsWith(".linkedin.com")) return rawUrl;
+  url.pathname = url.pathname.replace(/\/jobs\/search-results\/?/, "/jobs/search/");
+  if (!url.pathname.startsWith("/jobs/search")) return rawUrl;
+  for (const param of ["currentJobId", "origin", "referralSearchId"]) url.searchParams.delete(param);
+  url.searchParams.set("sortBy", "DD");
+  return url.toString();
+}
+
 function matchesPattern(pattern, url) {
   const glob = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
   return new RegExp(`^${glob}$`).test(String(url).split("#")[0]);
@@ -80,7 +96,7 @@ export async function startExtension({ connected = false, synced = true, watches
   vi.setSystemTime(new Date(NOW));
 
   const env = installChromeMock();
-  const api = installFakeWatchDesk();
+  const api = installFakeWatchDesk({ saveUrl: asWatchDeskSaves });
   const { chrome } = env;
   let pending = 0;
   let workerListeners = [];
