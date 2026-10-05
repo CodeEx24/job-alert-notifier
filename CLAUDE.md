@@ -70,6 +70,19 @@ Reference documents in the WatchDesk repository:
   different account connecting removes it. Never send it to another account,
   never queue a 400, and never drop from it without counting the drop for the
   popup.
+- **The queue is written before it is sent, and sent only on the connection
+  it was read on** (WD-110). A cycle's listings go into the queue before the
+  first request and leave it as WatchDesk answers; the cap is applied when
+  the cycle ends, never to make room for what is about to be sent. Every
+  request of a cycle carries the `connection` that `captureConnection()`
+  returned at its start, so `authorizedRequest()` sends it with that
+  connection's token or not at all: never read the token again for a batch
+  that was read earlier. `watchdeskAccount` must always describe the stored
+  token or be empty. An answer the code has no rule for (not 2xx, 400, 401,
+  403, 404, 429 or 5xx) never ends a cycle: the batch is retried on later
+  cycles, 3 attempts in all, then dropped and counted. A 403 is the account
+  being refused, not the batch: it ends the cycle like an outage and never
+  counts as an attempt.
 - **The WatchDesk origin is named in one place:** `config.js`, plus the same
   origins in `manifest.json`'s `host_permissions`. `tests/config.test.js`
   enforces this.
@@ -88,11 +101,11 @@ Reference documents in the WatchDesk repository:
 | `background.js` | Service worker: check cycle, feed, notifications, popup messages |
 | `config.js` | The WatchDesk origin (production / development) |
 | `watchdesk-api.js` | The only WatchDesk API client (`requestJson`, the authenticated `authorizedRequest` with retries (WD-44), one function per route, including the four watch routes (WD-54) and listing ingestion (WD-59)) |
-| `account-connection.js` | Device pairing, token storage, connected state (WD-42) |
+| `account-connection.js` | Device pairing, token storage, connected state (WD-42); `captureConnection()`, the handle that binds a request to one token (WD-110) |
 | `watch-sync.js` | The watch list of a connected browser: sync with the account, first-connection upload, add / rename / pause / remove through the API (WD-54) |
 | `popup.html` / `popup.css` / `popup.js` | The popup |
 | `popup-account.js` | The popup's account card (WD-42) |
-| `listing-ingest.js` | Posts each check cycle's listings to the connected account, after the cycle; records the last success for the popup (WD-59); queues what could not be sent and retries it on the next cycle (WD-60) |
+| `listing-ingest.js` | Posts each check cycle's listings to the connected account, after the cycle; records the last success for the popup (WD-59); queues what could not be sent and retries it on the next cycle (WD-60); queues a cycle before sending it, gives up on a batch WatchDesk will not take, and binds every request to the cycle's connection (WD-110) |
 | `popup-watch-sync.js` | The popup's synced / offline line and refused-change message (WD-54), which is also its "last synced" indicator for listings (WD-59) and says how many are waiting or were dropped (WD-60) |
 | `sites.js`, `content-*.js`, `offscreen.*`, `sounds.js` | Site adapters, tab readers, HTML parsing, alert tones |
 | `tests/` | Vitest unit tests with mocked `chrome.*` and `fetch` |

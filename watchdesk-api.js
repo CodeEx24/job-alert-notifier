@@ -134,6 +134,8 @@ let auth = {
 // account-connection.js calls this once, at load. `getToken()` returns the
 // stored device token or null; `onUnauthorized(token)` is told which token
 // WatchDesk refused, so it can discard it if it is still the stored one.
+// `getToken(connection)` (WD-110) returns the stored token only while it is
+// still the one that connection was captured with, else null.
 export function configureAuth({ getToken, onUnauthorized }) {
   auth = { getToken, onUnauthorized };
 }
@@ -144,15 +146,29 @@ export function configureAuth({ getToken, onUnauthorized }) {
 // a 5xx or a 429); the caller reports it and the next check cycle tries
 // again. With no token stored it sends nothing and answers 401.
 // A 401 calls onUnauthorized() before returning, and is never retried.
-export async function authorizedRequest(path, { method = "GET", headers = {}, body, idempotent, timeoutMs } = {}) {
+//
+// `connection` (WD-110; account-connection.js's captureConnection()) binds
+// the call to one connection: every attempt goes out with that connection's
+// token or not at all. Once the stored token is another one, or none, the
+// call sends nothing more and answers status 0 with `connectionChanged:
+// true`. For a caller whose request was read for one account, this is what
+// keeps it from reaching the account that connected next. Without
+// `connection` nothing changes.
+export async function authorizedRequest(
+  path,
+  { method = "GET", headers = {}, body, idempotent, timeoutMs, connection } = {},
+) {
   const canRetry = idempotent ?? IDEMPOTENT_METHODS.has(method.toUpperCase());
   const maxAttempts = canRetry ? RETRY_POLICY.maxAttempts : 1;
 
   for (let attempt = 1; ; attempt++) {
     // Read again on every attempt: the token may have been discarded (a
     // 401 elsewhere) or replaced (a new pairing) while this call waited.
-    const token = await auth.getToken();
-    if (!token) return { status: 401, body: null, retryAfterSeconds: null, attempts: attempt - 1 };
+    const token = await auth.getToken(connection);
+    if (!token) {
+      const unsent = { body: null, retryAfterSeconds: null, attempts: attempt - 1 };
+      return connection === undefined ? { status: 401, ...unsent } : { status: 0, ...unsent, connectionChanged: true };
+    }
 
     const response = await requestJson(path, {
       method,
@@ -245,9 +261,14 @@ export async function pollPairing(code, pollSecret) {
 //     which authorizedRequest() has already handed to onUnauthorized)
 //   | { kind: "rate-limited", retryAfterSeconds } | { kind: "unreachable" }
 //   | { kind: "error", status }
-// The last three are what is left after the retries.
-export async function getCurrentDevice() {
-  const response = await authorizedRequest("/api/devices/current");
+//   | { kind: "connection-changed" } (only with `connection`: the token is
+//     no longer that connection's, so nothing was, or went on being, sent)
+// The three before it are what is left after the retries. `connection`
+// (WD-110) binds the call to one token, so the answer is that token's
+// account and no other's.
+export async function getCurrentDevice(connection) {
+  const response = await authorizedRequest("/api/devices/current", { connection });
+  if (response.connectionChanged) return { kind: "connection-changed" };
   const failure = commonFailure(response);
   if (failure) return failure;
   if (response.status === 401) return { kind: "unauthorized" };
@@ -379,12 +400,19 @@ export const INGEST_MAX_LISTINGS = 200;
 // Unlike the watch calls this one retries (RETRY_POLICY): WatchDesk keeps
 // one row per posting however often it is sent, so a repeat is harmless, and
 // it runs after the job check has finished, so nothing waits on it.
-export async function ingestListings(watchId, listings) {
+//
+// `connection` (WD-110) is the connection the listings were read for. The
+// request goes out with that connection's token only; if it is no longer
+// the stored one, nothing is sent and the answer is
+// { kind: "connection-changed" }.
+export async function ingestListings(watchId, listings, connection) {
   const response = await authorizedRequest("/api/listings/ingest", {
     method: "POST",
     body: { watchId, listings },
     idempotent: true,
+    connection,
   });
+  if (response.connectionChanged) return { kind: "connection-changed" };
   if (response.status !== 200) return watchFailure(response);
   const inserted = Array.isArray(response.body?.inserted) ? response.body.inserted : [];
   return {

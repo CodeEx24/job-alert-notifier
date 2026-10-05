@@ -640,3 +640,112 @@ describe("secrets", () => {
     expect(env.chrome.storage.sync.get).not.toHaveBeenCalled();
   });
 });
+
+describe("whose the stored token is (WD-110)", () => {
+  const OTHER_TOKEN = "wd_fedcba9876543210fedcba9876543210.othersecret-abcdefghijklmnopqrstuvwxyz012";
+  const local = () => env.chrome.storage.local.dump();
+  const currentCalls = () => api.requests.filter((r) => r.path === "/api/devices/current");
+  const adaAnswer = () =>
+    api.json(200, { account: { email: "ada@example.com", displayName: "Ada" }, device: { id: "d", label: "L" } });
+
+  describe("a captured connection", () => {
+    it("is nothing with no account connected", async () => {
+      expect(await mod.captureConnection()).toBeNull();
+    });
+
+    it("names the account, and never holds the token", async () => {
+      await env.chrome.storage.local.set({ [mod.TOKEN_KEY]: TEST_TOKEN });
+      expect(await mod.captureConnection()).toEqual({ owner: null });
+
+      await mod.refreshAccount();
+      const connection = await mod.captureConnection();
+      expect(connection).toEqual({ owner: "ada@example.com" });
+      expect(Object.isFrozen(connection)).toBe(true);
+      expectNoSecrets(connection);
+      expectNoSecrets(Reflect.ownKeys(connection).map(String));
+    });
+
+    it("reads the token and the account's name in one storage call", async () => {
+      await env.chrome.storage.local.set({ [mod.TOKEN_KEY]: TEST_TOKEN });
+      env.chrome.storage.local.get.mockClear();
+      await mod.captureConnection();
+
+      expect(env.chrome.storage.local.get.mock.calls).toEqual([[[mod.TOKEN_KEY, mod.ACCOUNT_KEY]]]);
+    });
+  });
+
+  describe("asking WatchDesk whose the token is", () => {
+    beforeEach(async () => {
+      await env.chrome.storage.local.set({ [mod.TOKEN_KEY]: TEST_TOKEN });
+    });
+
+    it("does not keep an answer for a token that a new pairing has replaced meanwhile", async () => {
+      const queue = { owner: "grace@example.com", items: [], dropped: 2, droppedSeen: false };
+      await env.chrome.storage.local.set({ [mod.LISTING_QUEUE_KEY]: queue });
+      api.setCurrent(async () => {
+        await env.chrome.storage.local.set({ [mod.TOKEN_KEY]: OTHER_TOKEN });
+        return adaAnswer();
+      });
+      const state = await mod.refreshAccount();
+
+      // Ada's name is not put beside the other account's token, and the
+      // queue is not judged by it.
+      expect(local()[mod.ACCOUNT_KEY]).toBeUndefined();
+      expect(await mod.getAccountOwner()).toBeNull();
+      expect(local()[mod.LISTING_QUEUE_KEY]).toEqual(queue);
+      expect(state).toMatchObject({ status: "connected", email: null });
+    });
+
+    it("does not keep an answer for a token that has been discarded meanwhile", async () => {
+      api.setCurrent(async () => {
+        await env.chrome.storage.local.remove(mod.TOKEN_KEY);
+        return adaAnswer();
+      });
+      await mod.refreshAccount();
+
+      expect(local()[mod.ACCOUNT_KEY]).toBeUndefined();
+    });
+
+    it("does not retry with a token stored while it was waiting", async () => {
+      api.setCurrent(async () => {
+        await env.chrome.storage.local.set({ [mod.TOKEN_KEY]: OTHER_TOKEN });
+        return api.json(503, {});
+      });
+      const pending = mod.refreshAccount();
+      await advance(60000);
+      const state = await pending;
+
+      expect(currentCalls()).toHaveLength(1);
+      expect(currentCalls()[0].headers).toEqual({ Authorization: `Bearer ${TEST_TOKEN}` });
+      expect(state).toMatchObject({ status: "connected", accountCheckFailed: true });
+      expect(local()[mod.ACCOUNT_KEY]).toBeUndefined();
+    });
+
+    it("still keeps the answer when nothing changed", async () => {
+      await mod.refreshAccount();
+      expect(local()[mod.ACCOUNT_KEY]).toEqual({
+        email: "ada@example.com",
+        displayName: "Ada Lovelace",
+        deviceLabel: "Chrome on my laptop",
+      });
+    });
+  });
+
+  it("a new pairing stores its token and empties the last account's name in one write", async () => {
+    // A name left behind without its token.
+    await env.chrome.storage.local.set({ [mod.ACCOUNT_KEY]: { email: "ada@example.com" } });
+    api.setCurrent(api.networkError);
+    await mod.startConnecting();
+    api.queuePoll(api.approved);
+    env.chrome.storage.local.set.mockClear();
+    await advance(3000);
+
+    // The write of the token carries the emptied account with it, so no
+    // worker stopped after it can find the two side by side.
+    const write = env.chrome.storage.local.set.mock.calls.find(([items]) => mod.TOKEN_KEY in items)[0];
+    expect(write).toEqual({ [mod.TOKEN_KEY]: TEST_TOKEN, [mod.ACCOUNT_KEY]: null });
+    expect(await mod.getAccountOwner()).toBeNull();
+    expect(local()[mod.ACCOUNT_KEY]).toBeUndefined();
+    await advance(60000);
+  });
+});

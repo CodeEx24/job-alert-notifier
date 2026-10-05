@@ -57,6 +57,12 @@
 // and reports a 401 to discardToken() below — the one place a refused token
 // is dropped. It records the outcome "revoked" and tells an open popup
 // ("account-state-changed"), so the popup flips to not connected at once.
+//
+// Whose the token is (WD-110): watchdeskAccount always describes the stored
+// token or is empty, never an earlier token's account. A new token and the
+// emptied account are one write (completePairing), and an answer from
+// /api/devices/current is stored only while the token it was asked with is
+// still the stored one (refreshAccount). captureConnection() relies on it.
 
 import { WATCHDESK_ORIGIN } from "./config.js";
 import { startPairing, pollPairing, getCurrentDevice, configureAuth } from "./watchdesk-api.js";
@@ -115,6 +121,32 @@ export async function getAccountOwner() {
   if (!(await readToken())) return null;
   const { [ACCOUNT_KEY]: account } = await chrome.storage.local.get(ACCOUNT_KEY);
   return ownerOf(account?.email);
+}
+
+// The token each captured connection stands for. Kept here so that the
+// module holding a connection never holds the token.
+const connectionTokens = new WeakMap();
+
+// The connection as it is now (WD-110): { owner }, the account as
+// getAccountOwner() names it, read in the same storage call as the token.
+// Null with no account connected. Passed to an API call as `connection`, it
+// lets that call go out with this token only: once the token is replaced (a
+// new pairing) or discarded, the call sends nothing. So what was read for
+// this owner cannot reach whoever connects next.
+export async function captureConnection() {
+  const { [TOKEN_KEY]: token, [ACCOUNT_KEY]: account } = await chrome.storage.local.get([TOKEN_KEY, ACCOUNT_KEY]);
+  if (typeof token !== "string" || !token) return null;
+  const connection = Object.freeze({ owner: ownerOf(account?.email) });
+  connectionTokens.set(connection, token);
+  return connection;
+}
+
+// The token authorizedRequest() sends: the stored one, or, for a call bound
+// to a connection, the stored one only while it is still that connection's.
+async function tokenFor(connection) {
+  const token = await readToken();
+  if (connection === undefined) return token;
+  return token !== null && connectionTokens.get(connection) === token ? token : null;
 }
 
 // WatchDesk refused this token (401). Drop it, unless a new pairing has
@@ -185,9 +217,12 @@ function endPairing(code, outcome) {
 // would leave a device nobody holds. The token is written first and the
 // pairing cleared second; wherever both exist (a worker stopped between the
 // two writes), the token wins and the leftover pairing is discarded.
+// The previous token's account is emptied in the same write as the token
+// (WD-110), so there is no moment, and no stopped worker, in which the new
+// token sits beside the old account's name.
 async function completePairing(token) {
   await withLock(async () => {
-    await chrome.storage.local.set({ [TOKEN_KEY]: token });
+    await chrome.storage.local.set({ [TOKEN_KEY]: token, [ACCOUNT_KEY]: null });
     await chrome.storage.local.remove([ACCOUNT_KEY, WATCH_SYNC_KEY, LISTING_SYNC_KEY]);
     await chrome.storage.session.remove([PAIRING_KEY, OUTCOME_KEY]);
     await chrome.alarms.clear(PAIRING_ALARM);
@@ -390,21 +425,28 @@ export async function cancelConnecting() {
 // already discarded it through discardToken(). Any other failure, after
 // the retries, keeps the token and the last known account; the next check
 // asks again.
+// The answer is for the token the call went out with. If a new pairing has
+// stored another one meanwhile, the answer is not that token's account and
+// is not kept (WD-110); completePairing() asks again for the new one.
 export async function refreshAccount() {
-  if (!(await readToken())) return getConnectionState();
+  const connection = await captureConnection();
+  if (!connection) return getConnectionState();
 
-  const result = await getCurrentDevice();
+  const result = await getCurrentDevice(connection);
   if (result.kind === "ok") {
-    await chrome.storage.local.set({
-      [ACCOUNT_KEY]: {
-        email: result.account.email,
-        displayName: result.account.displayName,
-        deviceLabel: result.device.label,
-      },
+    await withLock(async () => {
+      if (!(await tokenFor(connection))) return;
+      await chrome.storage.local.set({
+        [ACCOUNT_KEY]: {
+          email: result.account.email,
+          displayName: result.account.displayName,
+          deviceLabel: result.device.label,
+        },
+      });
+      // WD-60: listings queued for one account are never sent to another.
+      const { [LISTING_QUEUE_KEY]: queue } = await chrome.storage.local.get(LISTING_QUEUE_KEY);
+      if (queue && queue.owner !== ownerOf(result.account.email)) await chrome.storage.local.remove(LISTING_QUEUE_KEY);
     });
-    // WD-60: listings queued for one account are never sent to another.
-    const { [LISTING_QUEUE_KEY]: queue } = await chrome.storage.local.get(LISTING_QUEUE_KEY);
-    if (queue && queue.owner !== ownerOf(result.account.email)) await chrome.storage.local.remove(LISTING_QUEUE_KEY);
   }
 
   const state = await getConnectionState();
@@ -416,7 +458,7 @@ export async function refreshAccount() {
 
 // The authenticated path reads the token from here and reports a refused
 // one here. Done at load, so it is in place before any call can be made.
-configureAuth({ getToken: readToken, onUnauthorized: discardToken });
+configureAuth({ getToken: tokenFor, onUnauthorized: discardToken });
 
 async function handleTabRemoved(tabId) {
   const pairing = await readPairing();
