@@ -31,6 +31,12 @@
 //                               last got a check's listings to WatchDesk
 //                               (WD-59). Removed here with it, for the same
 //                               reason.
+//                             watchdeskListingQueue  the listings
+//                               listing-ingest.js could not send yet (WD-60).
+//                               It belongs to an account, not a connection:
+//                               it stays when a token is stored or dropped,
+//                               and is removed here as soon as the connected
+//                               account turns out to be a different one.
 //   Never chrome.storage.sync: nothing here may leave this browser.
 //
 // Keeping the polling alive in an MV3 worker: the worker is stopped after
@@ -59,6 +65,7 @@ export const TOKEN_KEY = "watchdeskToken";
 export const ACCOUNT_KEY = "watchdeskAccount";
 export const WATCH_SYNC_KEY = "watchdeskWatchSync";
 export const LISTING_SYNC_KEY = "watchdeskListingSync";
+export const LISTING_QUEUE_KEY = "watchdeskListingQueue";
 export const PAIRING_KEY = "watchdeskPairing";
 export const OUTCOME_KEY = "watchdeskPairingOutcome";
 export const PAIRING_ALARM = "watchdesk-pairing";
@@ -92,6 +99,22 @@ async function readToken() {
 // between the account's watches and this browser's own. Never the token.
 export async function isConnected() {
   return (await readToken()) !== null;
+}
+
+// How one account is told from another (WD-60): its email address, trimmed
+// and lower-cased. GET /api/devices/current gives nothing else that stays
+// the same across pairings (every pairing is a new device id).
+function ownerOf(email) {
+  return typeof email === "string" && email.trim() ? email.trim().toLowerCase() : null;
+}
+
+// The connected account, as listing-ingest.js names the owner of its queue.
+// Null with no account connected, and until WatchDesk has said whose the
+// token is.
+export async function getAccountOwner() {
+  if (!(await readToken())) return null;
+  const { [ACCOUNT_KEY]: account } = await chrome.storage.local.get(ACCOUNT_KEY);
+  return ownerOf(account?.email);
 }
 
 // WatchDesk refused this token (401). Drop it, unless a new pairing has
@@ -379,6 +402,9 @@ export async function refreshAccount() {
         deviceLabel: result.device.label,
       },
     });
+    // WD-60: listings queued for one account are never sent to another.
+    const { [LISTING_QUEUE_KEY]: queue } = await chrome.storage.local.get(LISTING_QUEUE_KEY);
+    if (queue && queue.owner !== ownerOf(result.account.email)) await chrome.storage.local.remove(LISTING_QUEUE_KEY);
   }
 
   const state = await getConnectionState();

@@ -61,6 +61,15 @@ Reference documents in the WatchDesk repository:
   connected. A watch is named only by its WatchDesk id (never a local id),
   at most 200 listings a request, and neither the token nor a listing is
   ever logged.
+- **Unsent listings wait in a queue that belongs to one account** (WD-60).
+  It lives in `chrome.storage.local` (`watchdeskListingQueue`), is sent
+  oldest first before a cycle's own listings, and a listing leaves it only
+  after WatchDesk answered for it. It is capped (2,000 listings, 2 MB) and at
+  most 10 queued requests go out per cycle. It is sent only while the account
+  it was read for (by email) is the connected one: it survives a 401, and a
+  different account connecting removes it. Never send it to another account,
+  never queue a 400, and never drop from it without counting the drop for the
+  popup.
 - **The WatchDesk origin is named in one place:** `config.js`, plus the same
   origins in `manifest.json`'s `host_permissions`. `tests/config.test.js`
   enforces this.
@@ -83,8 +92,8 @@ Reference documents in the WatchDesk repository:
 | `watch-sync.js` | The watch list of a connected browser: sync with the account, first-connection upload, add / rename / pause / remove through the API (WD-54) |
 | `popup.html` / `popup.css` / `popup.js` | The popup |
 | `popup-account.js` | The popup's account card (WD-42) |
-| `listing-ingest.js` | Posts each check cycle's listings to the connected account, after the cycle; records the last success for the popup (WD-59) |
-| `popup-watch-sync.js` | The popup's synced / offline line and refused-change message (WD-54), which is also its "last synced" indicator for listings (WD-59) |
+| `listing-ingest.js` | Posts each check cycle's listings to the connected account, after the cycle; records the last success for the popup (WD-59); queues what could not be sent and retries it on the next cycle (WD-60) |
+| `popup-watch-sync.js` | The popup's synced / offline line and refused-change message (WD-54), which is also its "last synced" indicator for listings (WD-59) and says how many are waiting or were dropped (WD-60) |
 | `sites.js`, `content-*.js`, `offscreen.*`, `sounds.js` | Site adapters, tab readers, HTML parsing, alert tones |
 | `tests/` | Vitest unit tests with mocked `chrome.*` and `fetch` |
 

@@ -1285,9 +1285,16 @@ function renderVersionInfo(version) {
   }, 8000);
 }
 
+// WD-60: the sync line has just shown that queued listings were dropped;
+// the worker keeps showing it until it has heard this.
+function ackListingDrops(watchSync) {
+  if (watchSync?.listings?.dropped > 0) send({ type: "listing-drops-seen" }).catch(() => {});
+}
+
 function renderAll() {
   if (!lastState) return;
   renderWatchSync(lastState.watchSync);
+  ackListingDrops(lastState.watchSync);
   renderWatchList(lastState.settings, lastState.runState);
   renderFeed(lastState.runState);
   syncControls(lastState.settings);
@@ -1395,6 +1402,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (message?.type !== "watch-sync-changed" || !lastState) return;
     lastState.watchSync = message.watchSync;
     renderWatchSync(lastState.watchSync);
+    ackListingDrops(lastState.watchSync);
   });
 
   // Restore the last search/filter/sort choice before the first render, so

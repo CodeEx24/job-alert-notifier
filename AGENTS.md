@@ -26,6 +26,12 @@ this file mirrors its must-follow rules.
   `listing-ingest.js` runs once a cycle is saved and notified, cannot delay
   or fail a check, sends nothing when not connected, names a watch only by
   its WatchDesk id, and never logs the token or a listing.
+- **Unsent listings wait in a queue that belongs to one account** (WD-60):
+  `chrome.storage.local` only, sent oldest first before a cycle's own, removed
+  only after WatchDesk answered, capped (2,000 listings, 2 MB; 10 queued
+  requests per cycle), kept through a 401 and removed when a different
+  account connects. Never send it to another account, never queue a 400, and
+  never drop from it without counting the drop for the popup.
 - **The WatchDesk origin lives only in `config.js`** (and `manifest.json`'s
   `host_permissions`).
 - **No regression in shipped behaviour:** Open All Tabs, the settings panel,

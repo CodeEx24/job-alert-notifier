@@ -125,8 +125,99 @@ describe("describeWatchSync: when listings last reached WatchDesk (WD-59)", () =
   });
 });
 
+describe("describeWatchSync: listings waiting to be sent, and listings dropped (WD-60)", () => {
+  const base = { mode: "account", offline: false, lastSyncedAt: minutesAgo(2), localOnly: 0 };
+  const withListings = (listings, more = {}) => ({
+    ...base,
+    ...more,
+    listings: { lastIngestedAt: null, failed: false, queued: 0, dropped: 0, ...listings },
+  });
+
+  it("adds nothing while nothing is waiting and nothing was dropped", () => {
+    expect(describeWatchSync(withListings({ lastIngestedAt: minutesAgo(7) }), NOW)).toEqual({
+      tone: "ok",
+      text: "Watches synced with WatchDesk · 2m ago · Listings last synced 7m ago",
+    });
+  });
+
+  it("says how many listings are waiting after a send that failed", () => {
+    expect(describeWatchSync(withListings({ lastIngestedAt: minutesAgo(65), failed: true, queued: 42 }), NOW)).toEqual({
+      tone: "warning",
+      text: "Watches synced with WatchDesk · 2m ago · Listings couldn't be sent to WatchDesk last time (last synced 1h ago) · 42 listings waiting to be sent",
+    });
+    expect(describeWatchSync(withListings({ failed: true, queued: 1 }), NOW).text).toBe(
+      "Watches synced with WatchDesk · 2m ago · Listings couldn't be sent to WatchDesk last time · 1 listing waiting to be sent",
+    );
+  });
+
+  it("says so too while a long queue is still going out, without calling it a failure", () => {
+    expect(describeWatchSync(withListings({ lastIngestedAt: minutesAgo(65), queued: 400 }), NOW)).toEqual({
+      tone: "ok",
+      text: "Watches synced with WatchDesk · 2m ago · Listings last synced 1h ago · 400 listings waiting to be sent",
+    });
+  });
+
+  it("offline keeps its own wording and adds how many are waiting", () => {
+    const view = describeWatchSync(withListings({ lastIngestedAt: minutesAgo(12), failed: true, queued: 3 }, { offline: true }), NOW);
+    expect(view.tone).toBe("offline");
+    expect(view.text).toBe(
+      "Offline — couldn't reach WatchDesk. Showing your watches as last synced 2m ago. They can't be changed until it's back. Listings last synced 12m ago. 3 listings waiting to be sent.",
+    );
+  });
+
+  it("warns that listings were dropped, and how many, even after everything else got through", () => {
+    expect(describeWatchSync(withListings({ lastIngestedAt: NOW, dropped: 120 }), NOW)).toEqual({
+      tone: "warning",
+      text: "Watches synced with WatchDesk · 2m ago · Listings last synced just now · WatchDesk was out of reach for too long: the 120 oldest unsent listings were dropped",
+    });
+    expect(describeWatchSync(withListings({ lastIngestedAt: NOW, dropped: 1 }), NOW).text).toContain(
+      "the oldest unsent listing was dropped",
+    );
+  });
+
+  it("shows the dropped warning in every connected state", () => {
+    const dropped = "WatchDesk was out of reach for too long: the 120 oldest unsent listings were dropped";
+    const failing = describeWatchSync(withListings({ failed: true, queued: 2000, dropped: 120 }), NOW);
+    expect(failing.tone).toBe("warning");
+    expect(failing.text).toContain("2000 listings waiting to be sent");
+    expect(failing.text).toContain(dropped);
+
+    const offline = describeWatchSync(withListings({ queued: 2000, dropped: 120 }, { offline: true }), NOW);
+    expect(offline.tone).toBe("offline");
+    expect(offline.text).toContain(dropped);
+
+    const syncing = describeWatchSync(withListings({ dropped: 120 }, { lastSyncedAt: null }), NOW);
+    expect(syncing).toEqual({ tone: "warning", text: `Syncing your watches with WatchDesk… · ${dropped}` });
+  });
+
+  it("ignores counts that are not counts, and shows nothing with no account connected", () => {
+    expect(describeWatchSync(withListings({ queued: "many", dropped: -3 }), NOW)).toEqual({
+      tone: "ok",
+      text: "Watches synced with WatchDesk · 2m ago",
+    });
+    expect(describeWatchSync({ mode: "local", listings: { queued: 5, dropped: 5 } }, NOW)).toBeNull();
+  });
+});
+
 describe("renderWatchSync", () => {
   const line = () => doc.getElementById("watch-sync-status");
+
+  it("shows dropped listings as a visible warning in the one sync line (WD-60)", () => {
+    renderWatchSync(
+      {
+        mode: "account",
+        offline: false,
+        lastSyncedAt: Date.now(),
+        localOnly: 0,
+        listings: { lastIngestedAt: Date.now(), failed: false, queued: 0, dropped: 37 },
+      },
+      doc,
+    );
+    expect(line().hidden).toBe(false);
+    expect(line().dataset.tone).toBe("warning");
+    expect(line().textContent).toContain("the 37 oldest unsent listings were dropped");
+    expect(doc.querySelectorAll('[role="status"].watch-sync-status')).toHaveLength(1);
+  });
 
   it("is hidden in the markup, and stays hidden with no account connected", () => {
     expect(line().hidden).toBe(true);

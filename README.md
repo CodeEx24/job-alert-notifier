@@ -158,8 +158,14 @@ Each check also sends the **listings** it read to your account, after the
 check itself is done: the feed, notifications, badge and sound work exactly
 as before and never wait for WatchDesk. The line above the watch list says
 when listings last got there ("Listings last synced 2m ago"), or that the
-last attempt couldn't be sent. The feed in the popup and the other settings
-stay local. Without an account nothing changes: the watches stay in this
+last attempt couldn't be sent. Listings that couldn't be sent (WatchDesk
+down, no network, a disconnected browser) are kept in this browser and sent
+on the next check, oldest first; the line says how many are waiting. Up to
+2,000 are kept: beyond that the oldest are dropped, and the line says how
+many until you have seen it and everything else has been sent. They only
+ever go to the account they were read for: connecting a different account
+discards them. The feed in the popup and the other settings stay local.
+Without an account nothing changes: the watches stay in this
 browser and nothing is sent anywhere.
 
 1. Click **Connect Account**. A WatchDesk tab opens at

@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installChromeMock } from "./helpers/chrome-mock.js";
 import { installFakeWatchDesk, TEST_CODE, TEST_POLL_SECRET, TEST_TOKEN } from "./helpers/fake-watchdesk.js";
-import { LISTING_SYNC_KEY, PAIRING_ALARM, TOKEN_KEY, WATCH_SYNC_KEY } from "../account-connection.js";
+import { LISTING_QUEUE_KEY, LISTING_SYNC_KEY, PAIRING_ALARM, TOKEN_KEY, WATCH_SYNC_KEY } from "../account-connection.js";
 
 let env;
 let api;
@@ -349,7 +349,7 @@ describe("the watch list with an account connected (WD-54)", () => {
         offline: true,
         lastSyncedAt: Date.now() - 240000,
         localOnly: 0,
-        listings: { lastIngestedAt: null, failed: false },
+        listings: { lastIngestedAt: null, failed: false, queued: 0, dropped: 0 },
       });
     });
 
@@ -610,7 +610,7 @@ describe("a check cycle posts what it read to WatchDesk (WD-59)", () => {
         offline: false,
         lastSyncedAt: Date.now(),
         localOnly: 0,
-        listings: { lastIngestedAt: Date.now(), failed: false },
+        listings: { lastIngestedAt: Date.now(), failed: false, queued: 0, dropped: 0 },
       });
       expect(JSON.stringify(state)).not.toContain(TEST_TOKEN);
     });
@@ -626,7 +626,7 @@ describe("a check cycle posts what it read to WatchDesk (WD-59)", () => {
             offline: false,
             lastSyncedAt: Date.now(),
             localOnly: 0,
-            listings: { lastIngestedAt: Date.now(), failed: false },
+            listings: { lastIngestedAt: Date.now(), failed: false, queued: 0, dropped: 0 },
           },
         },
       ]);
@@ -639,7 +639,7 @@ describe("a check cycle posts what it read to WatchDesk (WD-59)", () => {
 
       // Answered with the check done, while the listings are not yet sent.
       expect(state.runState.lastRunAt).toBe(Date.now());
-      expect(state.watchSync.listings).toEqual({ lastIngestedAt: null, failed: false });
+      expect(state.watchSync.listings).toEqual({ lastIngestedAt: null, failed: false, queued: 0, dropped: 0 });
       expect(popupMessages).toEqual([]);
 
       await vi.advanceTimersByTimeAsync(120000);
@@ -675,6 +675,88 @@ describe("a check cycle posts what it read to WatchDesk (WD-59)", () => {
       expect(local()[LISTING_SYNC_KEY]).toBeUndefined();
       expect(local().lastRunAt).toBe(Date.now());
       expect(popupMessages.map((message) => message.type)).toEqual(["account-state-changed"]);
+    });
+  });
+
+  describe("when WatchDesk did not take a cycle's listings (WD-60)", () => {
+    beforeEach(async () => {
+      await env.chrome.storage.local.set({ [TOKEN_KEY]: TEST_TOKEN });
+    });
+
+    const outage = async () => {
+      api.setIngestRoute(api.networkError);
+      const listener = checkJobsAlarm();
+      await vi.advanceTimersByTimeAsync(120000);
+      await listener;
+      api.setIngestRoute(() => undefined);
+    };
+
+    it("keeps them in chrome.storage.local and sends them on the next alarm tick, before that tick's own", async () => {
+      await outage();
+      expect(local()[LISTING_QUEUE_KEY]).toEqual({
+        owner: "ada@example.com",
+        items: [{ watchId: api.watches[0].id, listing: listing(1) }],
+        dropped: 0,
+        droppedSeen: false,
+      });
+      expect(api.listings).toHaveLength(0);
+      // The check itself was not held up or failed by any of it.
+      expect(local().lastResult[api.watches[0].id].error).toBeNull();
+
+      page = [job(2)];
+      const before = api.ingestCalls().length;
+      await checkJobsAlarm();
+
+      expect(ingestBodies().slice(before)).toEqual([
+        { watchId: api.watches[0].id, listings: [listing(1)] },
+        { watchId: api.watches[0].id, listings: [listing(2)] },
+      ]);
+      expect(api.listings.map((row) => row.sourceKey)).toEqual(["onlinejobsph:131001", "onlinejobsph:131002"]);
+      expect(local()[LISTING_QUEUE_KEY]).toBeUndefined();
+      expect(local()[LISTING_SYNC_KEY]).toEqual({ lastIngestedAt: Date.now(), failed: false });
+    });
+
+    it("Check now retries them too", async () => {
+      await outage();
+      page = [];
+      await sendMessage({ type: "check-now" });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(api.listings.map((row) => row.sourceKey)).toEqual(["onlinejobsph:131001"]);
+      expect(local()[LISTING_QUEUE_KEY]).toBeUndefined();
+    });
+
+    it("tells the popup how many are waiting, and never what they are", async () => {
+      await outage();
+      const state = await sendMessage({ type: "get-state" });
+
+      expect(state.watchSync.listings).toEqual({ lastIngestedAt: null, failed: true, queued: 1, dropped: 0 });
+      expect(JSON.stringify(state.watchSync)).not.toContain("PHP Developer");
+      expect(JSON.stringify(popupMessages)).not.toContain("PHP Developer");
+    });
+
+    it("the popup's 'seen' message clears a dropped count once everything has got through", async () => {
+      await env.chrome.storage.local.set({
+        watchdeskAccount: { email: "ada@example.com" },
+        [LISTING_QUEUE_KEY]: { owner: "ada@example.com", items: [], dropped: 40, droppedSeen: false },
+      });
+      expect((await sendMessage({ type: "get-state" })).watchSync.listings.dropped).toBe(40);
+
+      expect(await sendMessage({ type: "listing-drops-seen" })).toEqual({ ok: true });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(local()[LISTING_QUEUE_KEY]).toBeUndefined();
+      expect((await sendMessage({ type: "get-state" })).watchSync.listings.dropped).toBe(0);
+    });
+
+    it("with no account connected there is no queue, whatever happens", async () => {
+      await env.chrome.storage.local.remove(TOKEN_KEY);
+      api.setIngestRoute(api.networkError);
+      await checkJobsAlarm();
+      await sendMessage({ type: "listing-drops-seen" });
+
+      expect(local()[LISTING_QUEUE_KEY]).toBeUndefined();
+      expect(api.requests.every((r) => r.origin === OJ_ORIGIN)).toBe(true);
     });
   });
 
