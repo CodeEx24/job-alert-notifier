@@ -1,20 +1,25 @@
-// popup-watch-sync.js — the line above the watch list that says how the
-// list stands against the connected WatchDesk account (WD-54): synced and
-// when, or offline and showing the last-synced list.
-//
-// It is also the popup's one "last synced" indicator (WD-59). Two things
-// are kept in step with the account and the line names both:
-//   the watch list   "Watches synced with WatchDesk · 2m ago" — the last
-//                    time this browser got the account's list;
-//   the listings     "Listings last synced 2m ago" — the last check cycle
-//                    whose listings all reached WatchDesk. When the latest
-//                    attempt did not get through, the line says so and
-//                    keeps the time of the last one that did.
+// popup-watch-sync.js — the sync status inside the account card at the top
+// of the popup (WD-73): how this browser stands against the connected
+// WatchDesk account. It is the popup's one sync indicator, and has two
+// parts:
+//   "Last synced 2m ago"   the most recent time WatchDesk and this browser
+//                          agreed: the later of the last sync that got the
+//                          account's watch list (WD-54) and the last check
+//                          cycle after which no listing was left to send
+//                          (WD-59). "Never synced" before either.
+//   the state              how many listings are waiting to be sent (WD-60),
+//                          and anything in the way: offline, listings that
+//                          could not be sent, an account WatchDesk is
+//                          refusing (403, WD-110), listings dropped, watches
+//                          that are only in this browser.
+// The time is kept apart from the state because it changes as the minutes
+// pass: the state is the live region and is announced when it changes, the
+// time is not announced on every tick.
 //
 // It only sees the status object the service worker sends (watch-sync.js's
-// getWatchSyncStatus). Everything it writes into the page goes through
-// textContent. With no account connected the line is hidden and the popup
-// looks as it always did.
+// getWatchSyncStatus plus listing-ingest.js's getListingSyncStatus), which
+// the worker reads from chrome.storage every time. Everything it writes into
+// the page goes through textContent. With no account connected it is hidden.
 
 function formatAgo(timestamp, now) {
   const minutes = Math.floor(Math.max(0, now - timestamp) / 60000);
@@ -27,46 +32,58 @@ function formatAgo(timestamp, now) {
 }
 
 const count = (value) => (Number.isInteger(value) && value > 0 ? value : 0);
+const time = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
 const listingsWord = (n) => (n === 1 ? "1 listing" : `${n} listings`);
 
-// What the line shows for a status: null when there is nothing to show,
-// else its tone and text. Pure, so the tests can check every state.
-// `status.listings` is { lastIngestedAt, failed } (WD-59) plus { queued,
-// dropped } (WD-60): how many listings are waiting to be sent again, and how
-// many the full queue had to drop. Before any check has sent listings it
-// adds nothing.
+// When WatchDesk and this browser last agreed: the later of the two times
+// above, or null when neither has happened.
+function lastSyncedAt(status) {
+  const times = [time(status.lastSyncedAt), time(status.listings?.lastIngestedAt)].filter((at) => at !== null);
+  return times.length > 0 ? Math.max(...times) : null;
+}
+
+// What the status shows: null when there is nothing to show (no account
+// connected), else { tone, lastSynced, text }. `lastSynced` is the label
+// that follows the clock; `text` is the state and holds no time, so it only
+// changes when the state does. Pure, so the tests can check every state.
+// `status.listings` is { lastIngestedAt, failed, reason?, queued, dropped }:
+// `queued` is how many listings are waiting in this account's queue,
+// `dropped` how many the queue had to drop, and `reason` is "forbidden" when
+// the last cycle ended because WatchDesk refused the account.
 export function describeWatchSync(status, now = Date.now()) {
   if (!status || status.mode !== "account") return null;
 
+  const at = lastSyncedAt(status);
+  const lastSynced = at === null ? "Never synced" : `Last synced ${formatAgo(at, now)}`;
   const synced = status.lastSyncedAt != null;
-  const listingsAt = typeof status.listings?.lastIngestedAt === "number" ? status.listings.lastIngestedAt : null;
   const listingsFailed = Boolean(status.listings?.failed);
   const queued = count(status.listings?.queued);
   const dropped = count(status.listings?.dropped);
+  const waiting = queued > 0 ? `${listingsWord(queued)} waiting to be sent` : "Nothing waiting to be sent";
   let tone;
   let text;
   if (status.offline) {
     tone = "offline";
     text = synced
-      ? `Offline — couldn't reach WatchDesk. Showing your watches as last synced ${formatAgo(status.lastSyncedAt, now)}.`
+      ? "Offline — couldn't reach WatchDesk. Your watches are shown as last synced."
       : "Offline — couldn't reach WatchDesk. Showing the watches saved in this browser.";
     text += " They can't be changed until it's back.";
     // Offline already says why nothing is getting through.
-    if (listingsAt != null) text += ` Listings last synced ${formatAgo(listingsAt, now)}.`;
-    if (queued > 0) text += ` ${listingsWord(queued)} waiting to be sent.`;
-  } else if (synced) {
-    tone = listingsFailed ? "warning" : "ok";
-    text = `Watches synced with WatchDesk · ${formatAgo(status.lastSyncedAt, now)}`;
-    if (listingsFailed) {
-      text += " · Listings couldn't be sent to WatchDesk last time";
-      if (listingsAt != null) text += ` (last synced ${formatAgo(listingsAt, now)})`;
-    } else if (listingsAt != null) {
-      text += ` · Listings last synced ${formatAgo(listingsAt, now)}`;
-    }
-    if (queued > 0) text += ` · ${listingsWord(queued)} waiting to be sent`;
-  } else {
+    if (queued > 0) text += ` ${waiting}.`;
+  } else if (!synced) {
     tone = "neutral";
     text = "Syncing your watches with WatchDesk…";
+    if (queued > 0) text += ` · ${waiting}`;
+  } else if (listingsFailed) {
+    tone = "warning";
+    text =
+      status.listings.reason === "forbidden"
+        ? "WatchDesk isn't accepting listings from this account. Verify your email address on WatchDesk"
+        : "Listings couldn't be sent to WatchDesk last time";
+    text += ` · ${waiting}`;
+  } else {
+    tone = "ok";
+    text = waiting;
   }
 
   // WD-60: said in every state, because these listings are gone for good.
@@ -83,19 +100,23 @@ export function describeWatchSync(status, now = Date.now()) {
         ? " · 1 watch is only in this browser, not on WatchDesk."
         : ` · ${status.localOnly} watches are only in this browser, not on WatchDesk.`;
   }
-  return { tone, text };
+  return { tone, lastSynced, text };
 }
 
-export function renderWatchSync(status, doc = document) {
+// `now` is the one clock: popup.js's tick and the tests both pass through
+// here.
+export function renderWatchSync(status, doc = document, now = Date.now()) {
   const line = doc.getElementById("watch-sync-status");
   if (!line) return;
-  const view = describeWatchSync(status);
+  const view = describeWatchSync(status, now);
   line.hidden = !view;
   line.dataset.tone = view ? view.tone : "";
+  doc.getElementById("watch-sync-last").textContent = view ? view.lastSynced : "";
+  const state = doc.getElementById("watch-sync-text");
   const text = view ? view.text : "";
   // Rewritten only when it changes, so the live region speaks once per
   // change rather than on every re-render.
-  if (line.textContent !== text) line.textContent = text;
+  if (state.textContent !== text) state.textContent = text;
 }
 
 // Shows why a change to the watch list was refused (the worker's

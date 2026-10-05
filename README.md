@@ -154,11 +154,17 @@ the popup opens or a check runs. If WatchDesk can't be reached, the popup
 shows the last-synced list with an "Offline" line, checks keep running on
 it, and changes to the list are refused until it is back.
 
+Once connected, the card shows the account's email and, beneath it, one sync
+line: **"Last synced 2m ago"** (the most recent of your watch list syncing
+and a check's listings all reaching WatchDesk; "Never synced" before either)
+followed by how many listings are waiting to be sent ("Nothing waiting to be
+sent" when there are none) and anything in the way.
+
 Each check also sends the **listings** it read to your account, after the
 check itself is done: the feed, notifications, badge and sound work exactly
-as before and never wait for WatchDesk. The line above the watch list says
-when listings last got there ("Listings last synced 2m ago"), or that the
-last attempt couldn't be sent. Listings that couldn't be sent (WatchDesk
+as before and never wait for WatchDesk. The sync line says when the last
+attempt couldn't be sent, and, when WatchDesk is refusing the account, to
+verify your email address there. Listings that couldn't be sent (WatchDesk
 down, no network, a disconnected browser) are kept in this browser and sent
 on the next check, oldest first; the line says how many are waiting. Up to
 2,000 are kept: beyond that the oldest are dropped, and the line says how
@@ -172,8 +178,9 @@ browser and nothing is sent anywhere.
 1. Click **Connect Account**. A WatchDesk tab opens at
    `/connect-extension?code=…`, showing a short code. Sign in first if asked.
 2. Check that the code matches the one in the popup, then click **Approve**.
-   The popup switches to "Connected to WatchDesk" with your account's email
-   within a few seconds, even if the popup was closed.
+   The popup's card switches to your account's email within a few seconds
+   ("Connecting…" until WatchDesk has named the account), even if the popup
+   was closed.
 3. Closing the tab before approving, clicking **Deny**, or letting the code's
    ten minutes run out leaves the extension "Not connected", with the reason
    shown. **Connect Account** starts again.

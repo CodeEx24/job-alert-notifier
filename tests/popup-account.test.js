@@ -14,6 +14,7 @@ function card() {
     tone: $("account-card").dataset.tone,
     title: $("account-title").textContent,
     detail: $("account-detail").textContent,
+    detailShown: !$("account-detail").parentElement.hidden,
     connect: !$("account-connect").hidden,
     showTab: !$("account-show-tab").hidden,
     cancel: !$("account-cancel").hidden,
@@ -77,24 +78,51 @@ describe("describeConnection", () => {
     });
   });
 
-  it("connected shows the account's email and the device name", () => {
+  it("connected shows the account's email as the title, and the device name beneath (WD-73)", () => {
     expect(
       describeConnection({ status: "connected", email: "ada@example.com", displayName: "Ada", deviceLabel: "Chrome on my laptop" }),
     ).toEqual({
       mode: "connected",
       tone: "ok",
-      title: "Connected to WatchDesk",
-      detail: "ada@example.com · Chrome on my laptop",
+      title: "ada@example.com",
+      detail: "Chrome on my laptop",
       buttons: [],
+    });
+    expect(describeConnection({ status: "connected", email: "ada@example.com", deviceLabel: null })).toMatchObject({
+      title: "ada@example.com",
+      detail: "",
     });
   });
 
-  it("connected falls back to the display name, then to a plain line", () => {
-    expect(describeConnection({ status: "connected", email: null, displayName: "Ada", deviceLabel: null }).detail).toBe("Ada");
-    expect(describeConnection({ status: "connected", email: null, displayName: null, deviceLabel: null }).detail).toBe("Connected");
+  it("connected falls back to the display name when there is no email", () => {
+    expect(describeConnection({ status: "connected", email: null, displayName: "Ada", deviceLabel: null }).title).toBe("Ada");
+  });
+
+  it("connected before WatchDesk has named the account says 'Connecting…', never an empty or earlier email (WD-73)", () => {
+    expect(describeConnection({ status: "connected", email: null, displayName: null, deviceLabel: null })).toEqual({
+      mode: "connected",
+      tone: "neutral",
+      title: "Connecting…",
+      detail: "",
+      buttons: [],
+    });
+    expect(describeConnection({ status: "connected", email: "", displayName: "", deviceLabel: "" }).title).toBe("Connecting…");
+  });
+
+  it("connected when the account could not be loaded says so instead of naming it", () => {
     expect(
-      describeConnection({ status: "connected", email: null, displayName: null, deviceLabel: null, accountCheckFailed: true }).detail,
-    ).toBe("Couldn't load the account details right now.");
+      describeConnection({ status: "connected", email: null, displayName: null, deviceLabel: null, accountCheckFailed: true }),
+    ).toEqual({
+      mode: "connected",
+      tone: "ok",
+      title: "Connected to WatchDesk",
+      detail: "Couldn't load the account's email right now.",
+      buttons: [],
+    });
+    // A name already known is kept through a failed check.
+    expect(describeConnection({ status: "connected", email: "ada@example.com", accountCheckFailed: true }).title).toBe(
+      "ada@example.com",
+    );
   });
 
   it("no answer from the worker reads as not connected", () => {
@@ -111,7 +139,68 @@ describe("renderAccountCard", () => {
     expect(card()).toMatchObject({ state: "pending", connect: false, showTab: true, cancel: true });
 
     renderAccountCard({ status: "connected", email: "ada@example.com", deviceLabel: null }, doc);
-    expect(card()).toMatchObject({ state: "connected", tone: "ok", detail: "ada@example.com", connect: false });
+    expect(card()).toMatchObject({ state: "connected", tone: "ok", title: "ada@example.com", connect: false });
+  });
+
+  it("shows the email, or 'not connected' with the Connect Account button, in the card at the top (WD-73)", () => {
+    renderAccountCard({ status: "connected", email: "ada@example.com", deviceLabel: "Edge" }, doc);
+    expect(card()).toMatchObject({ title: "ada@example.com", detail: "Edge", detailShown: true, connect: false });
+
+    renderAccountCard({ status: "not-connected", outcome: null }, doc);
+    expect(card()).toMatchObject({ title: "Not connected to WatchDesk", connect: true, detailShown: true });
+
+    // The card is the first thing under the title bar and its update banner.
+    const before = [];
+    for (let el = doc.getElementById("account-card").previousElementSibling; el; el = el.previousElementSibling) {
+      before.push(el.id || el.tagName.toLowerCase());
+    }
+    expect(before).toEqual(["update-banner", "header"]);
+  });
+
+  it("a revoked token (401) reads not connected, says why, and offers Connect Account", () => {
+    renderAccountCard({ status: "connected", email: "ada@example.com", deviceLabel: null }, doc);
+    renderAccountCard({ status: "not-connected", outcome: { reason: "revoked" } }, doc);
+    expect(card()).toMatchObject({
+      state: "not-connected",
+      tone: "problem",
+      title: "Not connected to WatchDesk",
+      detail: "This browser was disconnected from your WatchDesk account.",
+      connect: true,
+    });
+    expect(doc.getElementById("account-card").textContent).not.toContain("ada@example.com");
+  });
+
+  it("hides the detail line when there is nothing in it", () => {
+    renderAccountCard({ status: "connected", email: "ada@example.com", deviceLabel: null }, doc);
+    expect(card().detailShown).toBe(false);
+    renderAccountCard({ status: "connected", email: null, deviceLabel: null }, doc);
+    expect(card()).toMatchObject({ title: "Connecting…", tone: "neutral", detailShown: false });
+    renderAccountCard({ status: "pending", code: "WDJB-MJHT", expiresAt: Date.now() + 60000 }, doc);
+    expect(card().detailShown).toBe(true);
+  });
+
+  it("announces the account and its detail politely, each once per change", () => {
+    const title = doc.getElementById("account-title");
+    const detail = doc.getElementById("account-detail");
+    expect(title.getAttribute("aria-live")).toBe("polite");
+    expect(detail.getAttribute("aria-live")).toBe("polite");
+    // The live regions are those two: the card around them is not one, so
+    // the sync line's time can tick inside it unannounced.
+    expect(doc.getElementById("account-card").hasAttribute("aria-live")).toBe(false);
+
+    const state = { status: "connected", email: "ada@example.com", deviceLabel: "Edge" };
+    renderAccountCard(state, doc);
+    const written = [title.firstChild, detail.firstChild];
+    renderAccountCard(state, doc);
+    renderAccountCard({ ...state }, doc);
+    expect(title.firstChild).toBe(written[0]);
+    expect(detail.firstChild).toBe(written[1]);
+  });
+
+  it("never shows a token, whatever the state carries", () => {
+    const token = "wd_0123456789abcdef0123456789abcdef.secret-abcdefghijklmnopqrstuvwxyz0123456";
+    renderAccountCard({ status: "connected", email: "ada@example.com", deviceLabel: "Edge", token, watchdeskToken: token }, doc);
+    expect(doc.documentElement.outerHTML).not.toContain(token);
   });
 
   it("keeps the ticking countdown out of the live region", () => {
@@ -160,7 +249,43 @@ describe("initAccountCard", () => {
     );
     await initAccountCard({ send, setButtonBusy, doc });
     expect(send).toHaveBeenCalledWith({ type: "account-refresh" });
-    expect(card().detail).toBe("new@example.com · Edge");
+    expect(card()).toMatchObject({ title: "new@example.com", detail: "Edge" });
+  });
+
+  it("opened before WatchDesk has named the account: 'Connecting…', then the email, asked for once (WD-73)", async () => {
+    let answer;
+    const send = vi.fn(({ type }) =>
+      type === "account-refresh"
+        ? new Promise((resolve) => (answer = resolve))
+        : Promise.resolve({ status: "connected", email: null, displayName: null, deviceLabel: null }),
+    );
+    await initAccountCard({ send, setButtonBusy, doc });
+    expect(card()).toMatchObject({ state: "connected", tone: "neutral", title: "Connecting…" });
+
+    answer({ status: "connected", email: "ada@example.com", displayName: "Ada", deviceLabel: "Edge" });
+    await vi.waitFor(() => expect(card().title).toBe("ada@example.com"));
+    expect(send.mock.calls.filter(([message]) => message.type === "account-refresh")).toHaveLength(1);
+  });
+
+  it("an account that cannot be named is asked for once, not in a loop", async () => {
+    const send = vi.fn(async ({ type }) =>
+      type === "account-refresh"
+        ? { status: "connected", email: null, displayName: null, deviceLabel: null, accountCheckFailed: true }
+        : { status: "connected", email: null, displayName: null, deviceLabel: null },
+    );
+    await initAccountCard({ send, setButtonBusy, doc });
+    await vi.waitFor(() => expect(card().title).toBe("Connected to WatchDesk"));
+    expect(card().detail).toBe("Couldn't load the account's email right now.");
+    expect(send.mock.calls.filter(([message]) => message.type === "account-refresh")).toHaveLength(1);
+
+    // Even an answer that still has no name and no failure is not asked again.
+    const silent = vi.fn(async () => ({ status: "connected", email: null, displayName: null, deviceLabel: null }));
+    const html = readFileSync("popup.html", "utf8").replace(/<script[^>]*><\/script>/g, "");
+    const other = new JSDOM(html).window.document;
+    await initAccountCard({ send: silent, setButtonBusy, doc: other });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(silent.mock.calls.filter(([message]) => message.type === "account-refresh")).toHaveLength(1);
+    expect(other.getElementById("account-title").textContent).toBe("Connecting…");
   });
 
   it("shows not connected when the refresh finds the token revoked", async () => {
@@ -185,10 +310,35 @@ describe("initAccountCard", () => {
     expect(card().state).toBe("pending");
 
     await vi.advanceTimersByTimeAsync(2000);
-    expect(card()).toMatchObject({ state: "connected", detail: "ada@example.com" });
+    expect(card()).toMatchObject({ state: "connected", title: "ada@example.com" });
     const calls = send.mock.calls.length;
     await vi.advanceTimersByTimeAsync(5000);
     expect(send.mock.calls.length).toBe(calls);
+  });
+
+  it("a pairing approved while the popup is open shows 'Connecting…' until WatchDesk names the account (WD-73)", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const unnamed = { status: "connected", email: null, displayName: null, deviceLabel: null };
+    let answer;
+    const states = [{ status: "pending", code: "WDJB-MJHT", expiresAt: Date.now() + 600000 }, unnamed];
+    const send = vi.fn(({ type }) =>
+      type === "account-refresh" ? new Promise((resolve) => (answer = resolve)) : Promise.resolve(states.shift() ?? unnamed),
+    );
+    await initAccountCard({ send, setButtonBusy, doc });
+    expect(card().state).toBe("pending");
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(card()).toMatchObject({ state: "connected", title: "Connecting…", showTab: false, cancel: false });
+    expect(doc.getElementById("account-card").textContent).not.toContain("@");
+
+    answer({ status: "connected", email: "ada@example.com", displayName: "Ada", deviceLabel: null });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(card().title).toBe("ada@example.com");
+    // The pending poll has stopped, and the account was asked for once.
+    const calls = send.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(send.mock.calls.length).toBe(calls);
+    expect(send.mock.calls.filter(([message]) => message.type === "account-refresh")).toHaveLength(1);
   });
 
   // A stand-in for chrome.runtime.onMessage.

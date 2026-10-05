@@ -71,11 +71,15 @@
 //   - Cycles run one at a time (an alarm and "Check now" can overlap).
 //
 // Storage:
-//   chrome.storage.local -> watchdeskListingSync { lastIngestedAt, failed }
+//   chrome.storage.local -> watchdeskListingSync
+//                           { lastIngestedAt, failed, reason? }
 //     lastIngestedAt  epoch ms of the last cycle after which nothing was
 //                     left to send, or null.
 //     failed          the last cycle that had something to send could not
 //                     send all of it.
+//     reason          "forbidden" when that cycle ended on a 403, so the
+//                     popup can say what to do about it (WD-73); absent
+//                     otherwise.
 //     account-connection.js removes the key whenever a token is stored or
 //     dropped.
 //   chrome.storage.local -> watchdeskListingQueue
@@ -190,6 +194,7 @@ async function readState() {
   return {
     lastIngestedAt: typeof state?.lastIngestedAt === "number" ? state.lastIngestedAt : null,
     failed: Boolean(state?.failed),
+    ...(state?.failed && state.reason === "forbidden" ? { reason: "forbidden" } : {}),
   };
 }
 
@@ -347,12 +352,16 @@ function queuedBatches(queue, fresh) {
 // Not written once the token is gone: the state belongs to a connection.
 // After a cycle that left nothing to send, a dropped-listings count the user
 // has already seen is cleared too.
-async function recordCycle(owner, failed) {
+async function recordCycle(owner, failed, reason) {
   if (!(await isConnected())) return;
   const state = await readState();
   const allStored = !failed && (await readQueue(owner)).items.length === 0;
   await chrome.storage.local.set({
-    [LISTING_SYNC_KEY]: { lastIngestedAt: allStored ? Date.now() : state.lastIngestedAt, failed },
+    [LISTING_SYNC_KEY]: {
+      lastIngestedAt: allStored ? Date.now() : state.lastIngestedAt,
+      failed,
+      ...(failed && reason ? { reason } : {}),
+    },
   });
   if (!allStored) return;
   await updateQueue(owner, (queue) => {
@@ -365,7 +374,8 @@ async function recordCycle(owner, failed) {
 // What the popup shows about listings, beside the watch list's own status:
 // { lastIngestedAt, failed, queued, dropped }, where `queued` is how many
 // listings are waiting to be sent and `dropped` how many the cap has
-// dropped. No token, no listing.
+// dropped, plus { reason: "forbidden" } while the last cycle failed on a 403
+// (WD-73). No token, no listing.
 export async function getListingSyncStatus() {
   const queue = await readQueue(await getAccountOwner());
   return { ...(await readState()), queued: queue.items.length, dropped: queue.dropped };
@@ -424,6 +434,7 @@ async function runCycle(checked) {
   let refused = 0;
   let unsent = 0; // requests WatchDesk may still take later
   let disconnected = false;
+  let accountRefused = false; // a 403 ended the cycle
   for (let index = 0; index < batches.length; index++) {
     const batch = batches[index];
     if (deleted.has(batch.watchId)) continue;
@@ -449,6 +460,7 @@ async function runCycle(checked) {
       disconnected = true;
       break;
     } else if (isOutage(result)) {
+      accountRefused = result.kind === "forbidden";
       unsent += batches.slice(index).filter((left) => !deleted.has(left.watchId)).length;
       break;
     } else {
@@ -463,7 +475,7 @@ async function runCycle(checked) {
   if (disconnected) return { status: "not-connected", sent, unsent: 0 };
 
   const failed = unsent > 0 || refused > 0;
-  await recordCycle(owner, failed);
+  await recordCycle(owner, failed, accountRefused ? "forbidden" : null);
   return { status: failed ? "failed" : "ok", sent, unsent };
 }
 

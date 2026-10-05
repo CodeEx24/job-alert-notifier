@@ -1,5 +1,7 @@
 // popup-account.js — the WatchDesk account card at the top of the popup
-// (WD-42).
+// (WD-42), which is the popup's one status area (WD-73): whose account this
+// browser is connected to, by email, or that it is not connected. The sync
+// line beneath it, in the same card, is popup-watch-sync.js's.
 //
 // It only ever sees the connection state the service worker chooses to
 // send (account-connection.js's getConnectionState): never the device token
@@ -36,6 +38,10 @@ function outcomeMessage(outcome) {
   return OUTCOME_MESSAGES[outcome.reason] || OUTCOME_MESSAGES.error;
 }
 
+// Connected, and WatchDesk has not yet named the account.
+const isUnnamed = (state) =>
+  state?.status === "connected" && !state.email && !state.displayName && !state.accountCheckFailed;
+
 // What the card shows for a state: its title, detail line, tone, and which
 // buttons are visible. Pure, so the tests can check every state.
 export function describeConnection(state, now = Date.now()) {
@@ -43,11 +49,21 @@ export function describeConnection(state, now = Date.now()) {
     return { mode: "not-connected", tone: "problem", title: "Not connected to WatchDesk", detail: OUTCOME_MESSAGES.error, buttons: ["connect"] };
   }
   if (state.status === "connected") {
+    // WD-73: the title is the account. The sync line beneath says the rest.
     const who = state.email || state.displayName;
-    let detail;
-    if (who) detail = state.deviceLabel ? `${who} · ${state.deviceLabel}` : who;
-    else detail = state.accountCheckFailed ? "Couldn't load the account details right now." : "Connected";
-    return { mode: "connected", tone: "ok", title: "Connected to WatchDesk", detail, buttons: [] };
+    if (who) return { mode: "connected", tone: "ok", title: who, detail: state.deviceLabel || "", buttons: [] };
+    if (state.accountCheckFailed) {
+      return {
+        mode: "connected",
+        tone: "ok",
+        title: "Connected to WatchDesk",
+        detail: "Couldn't load the account's email right now.",
+        buttons: [],
+      };
+    }
+    // The token is stored and WatchDesk has not yet said whose it is
+    // (WD-110): no name is better than a wrong one.
+    return { mode: "connected", tone: "neutral", title: "Connecting…", detail: "", buttons: [] };
   }
   if (state.status === "pending") {
     return {
@@ -76,11 +92,13 @@ export function renderAccountCard(state, doc = document) {
   const view = describeConnection(state);
   card.dataset.state = view.mode;
   card.dataset.tone = view.tone;
-  doc.getElementById("account-title").textContent = view.title;
+  // Both are live regions, rewritten only when they change, so each speaks
+  // once per state change.
+  const title = doc.getElementById("account-title");
+  if (title.textContent !== view.title) title.textContent = view.title;
   const detail = doc.getElementById("account-detail");
-  // Rewritten only when it changes, so the live region speaks once per
-  // state change.
   if (detail.textContent !== view.detail) detail.textContent = view.detail;
+  detail.parentElement.hidden = !view.detail && !view.countdown;
   doc.getElementById("account-countdown").textContent = view.countdown || "";
   doc.getElementById("account-connect").hidden = !view.buttons.includes("connect");
   doc.getElementById("account-show-tab").hidden = !view.buttons.includes("show-tab");
@@ -102,9 +120,18 @@ export async function initAccountCard({
   if (!doc.getElementById("account-card")) return;
 
   let pendingTimer = null;
+  let askedWho = false;
   const render = (state) => {
     renderAccountCard(state, doc);
     onState?.(state);
+    // WD-73: a pairing has just completed and the account has no name yet.
+    // Ask once; the answer is the email, or that it could not be loaded.
+    if (!isUnnamed(state)) {
+      askedWho = false;
+    } else if (!askedWho) {
+      askedWho = true;
+      send({ type: "account-refresh" }).then(render, () => {});
+    }
     // While a pairing is pending, re-read the state every second: it keeps
     // the countdown moving and shows "connected" as soon as the worker has
     // collected the token, without the user reopening the popup.
@@ -153,5 +180,6 @@ export async function initAccountCard({
   render(state);
   // Confirm the stored token still works and refresh the email shown; a
   // revoked device comes back as "not connected".
-  if (state?.status === "connected") render(await send({ type: "account-refresh" }));
+  // (An account with no name yet has already been asked for, in render.)
+  if (state?.status === "connected" && !isUnnamed(state)) render(await send({ type: "account-refresh" }));
 }

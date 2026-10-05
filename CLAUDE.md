@@ -104,9 +104,9 @@ Reference documents in the WatchDesk repository:
 | `account-connection.js` | Device pairing, token storage, connected state (WD-42); `captureConnection()`, the handle that binds a request to one token (WD-110) |
 | `watch-sync.js` | The watch list of a connected browser: sync with the account, first-connection upload, add / rename / pause / remove through the API (WD-54) |
 | `popup.html` / `popup.css` / `popup.js` | The popup |
-| `popup-account.js` | The popup's account card (WD-42) |
+| `popup-account.js` | The popup's account card (WD-42): the one status area, titled with the connected account's email, "Connecting…" until WatchDesk has named it, or "Not connected" (WD-73) |
 | `listing-ingest.js` | Posts each check cycle's listings to the connected account, after the cycle; records the last success for the popup (WD-59); queues what could not be sent and retries it on the next cycle (WD-60); queues a cycle before sending it, gives up on a batch WatchDesk will not take, and binds every request to the cycle's connection (WD-110) |
-| `popup-watch-sync.js` | The popup's synced / offline line and refused-change message (WD-54), which is also its "last synced" indicator for listings (WD-59) and says how many are waiting or were dropped (WD-60) |
+| `popup-watch-sync.js` | The sync line inside the account card (WD-73): "Last synced Xm ago" (the later of the watch sync and the listing upload) and, as the live region, how many listings are waiting, offline, a refused account (403), dropped listings (WD-54, WD-59, WD-60); and the refused-change message above the watch list (WD-54) |
 | `sites.js`, `content-*.js`, `offscreen.*`, `sounds.js` | Site adapters, tab readers, HTML parsing, alert tones |
 | `tests/` | Vitest unit tests with mocked `chrome.*` and `fetch` |
 
