@@ -661,3 +661,125 @@ describe("the pairing calls stay off the authenticated path", () => {
     expect(onUnauthorized).not.toHaveBeenCalled();
   });
 });
+
+describe("a call bound to a connection (WD-110)", () => {
+  // What account-connection.js's captureConnection() hands out: a handle
+  // that only it can turn into a token.
+  const CONNECTION = Object.freeze({ owner: "ada@example.com" });
+  const WATCH_ID = "0b7c6c53-6f4a-4f43-9a3b-0c1f4a3f9a11";
+  const LISTING = { id: "401", title: "Engineer", url: "https://www.linkedin.com/jobs/view/401/" };
+  const noWait = () => vi.spyOn(globalThis, "setTimeout").mockImplementation((fn) => (fn(), 0));
+  // The connection the stored token belongs to.
+  let current;
+  let getToken;
+
+  beforeEach(() => {
+    current = CONNECTION;
+    getToken = vi.fn(async (connection) => (connection === undefined || connection === current ? storedToken : null));
+    configureAuth({ getToken, onUnauthorized });
+  });
+
+  it("goes out with that connection's token, asked for by the connection", async () => {
+    fetchMock.mockResolvedValue(json(200, { ok: true }));
+    const result = await authorizedRequest("/api/x", { connection: CONNECTION });
+
+    expect(result).toEqual({ status: 200, body: { ok: true }, retryAfterSeconds: null, attempts: 1 });
+    expect(getToken).toHaveBeenCalledWith(CONNECTION);
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({ Authorization: `Bearer ${TOKEN}` });
+  });
+
+  it("sends nothing, and says why, once the stored token is another connection's", async () => {
+    current = Object.freeze({ owner: "grace@example.com" });
+    const result = await authorizedRequest("/api/x", { method: "POST", body: { a: 1 }, connection: CONNECTION });
+
+    expect(result).toEqual({ status: 0, body: null, retryAfterSeconds: null, attempts: 0, connectionChanged: true });
+    expect(fetchMock).not.toHaveBeenCalled();
+    // Nobody's token was refused.
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it("sends nothing with no token stored either", async () => {
+    storedToken = null;
+    expect(await authorizedRequest("/api/x", { connection: CONNECTION })).toMatchObject({
+      status: 0,
+      attempts: 0,
+      connectionChanged: true,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("asks again before every attempt: a retry is not sent once the connection has changed", async () => {
+    noWait();
+    fetchMock.mockImplementation(async () => {
+      current = Object.freeze({ owner: "grace@example.com" });
+      storedToken = "wd_other.token";
+      return json(503, {});
+    });
+    const result = await authorizedRequest("/api/x", { connection: CONNECTION });
+
+    expect(result).toEqual({ status: 0, body: null, retryAfterSeconds: null, attempts: 1, connectionChanged: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain("wd_other.token");
+  });
+
+  it("retries, honours Retry-After and reports a 401 exactly as an unbound call does", async () => {
+    noWait();
+    fetchMock
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(json(429, {}, { "Retry-After": "1" }))
+      .mockResolvedValueOnce(json(200, { ok: true }));
+    expect(await authorizedRequest("/api/x", { connection: CONNECTION })).toMatchObject({ status: 200, attempts: 3 });
+
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue(json(429, {}, { "Retry-After": "60" }));
+    expect(await authorizedRequest("/api/x", { connection: CONNECTION })).toEqual({
+      status: 429,
+      body: {},
+      retryAfterSeconds: 60,
+      attempts: 1,
+    });
+
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(async () => json(500, {}));
+    expect(await authorizedRequest("/api/x", { method: "POST", connection: CONNECTION })).toMatchObject({ attempts: 1 });
+    expect(
+      await authorizedRequest("/api/x", { method: "POST", idempotent: true, connection: CONNECTION }),
+    ).toMatchObject({ status: 500, attempts: RETRY_POLICY.maxAttempts });
+
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue(json(401, {}));
+    expect(await authorizedRequest("/api/x", { connection: CONNECTION })).toMatchObject({ status: 401, attempts: 1 });
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+    expect(onUnauthorized).toHaveBeenCalledWith(TOKEN);
+  });
+
+  it("changes nothing for a call that names no connection", async () => {
+    fetchMock.mockResolvedValue(json(200, { ok: true }));
+    expect(await authorizedRequest("/api/x")).toEqual({ status: 200, body: { ok: true }, retryAfterSeconds: null, attempts: 1 });
+    expect(getToken).toHaveBeenCalledWith(undefined);
+
+    storedToken = null;
+    expect(await authorizedRequest("/api/x")).toEqual({ status: 401, body: null, retryAfterSeconds: null, attempts: 0 });
+  });
+
+  it("ingestListings binds its request, and reports a changed connection as its own kind", async () => {
+    fetchMock.mockResolvedValue(json(200, { received: 1, inserted: [] }));
+    expect((await ingestListings(WATCH_ID, [LISTING], CONNECTION)).kind).toBe("ok");
+    expect(getToken).toHaveBeenLastCalledWith(CONNECTION);
+
+    current = null;
+    fetchMock.mockClear();
+    expect(await ingestListings(WATCH_ID, [LISTING], CONNECTION)).toEqual({ kind: "connection-changed" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("getCurrentDevice binds its request the same way", async () => {
+    fetchMock.mockResolvedValue(json(200, { account: { email: "ada@example.com" }, device: { id: "d" } }));
+    expect((await getCurrentDevice(CONNECTION)).kind).toBe("ok");
+    expect(getToken).toHaveBeenLastCalledWith(CONNECTION);
+
+    current = null;
+    expect(await getCurrentDevice(CONNECTION)).toEqual({ kind: "connection-changed" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

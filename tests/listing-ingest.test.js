@@ -789,7 +789,13 @@ describe("the retry queue (WD-60)", () => {
 
       expect(outcome).toEqual({ status: "not-connected", sent: 1, unsent: 0 });
       expect(api.ingestCalls()).toHaveLength(1);
-      expect(queue()).toBeUndefined();
+      // WD-110: the cycle's listings were written ahead under the account
+      // they were read for. They are still that account's, and nothing of
+      // them is the new account's to see or send.
+      expect(queue().owner).toBe(ADA);
+      expect(await ingest.getListingSyncStatus()).toMatchObject({ queued: 0, dropped: 0 });
+      expect((await ingest.ingestCheckedListings([])).status).toBe("nothing-to-send");
+      expect(api.ingestCalls()).toHaveLength(1);
     });
 
     it("a cycle that fails after another account connected leaves that account's queue alone", async () => {

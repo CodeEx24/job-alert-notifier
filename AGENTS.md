@@ -32,6 +32,13 @@ this file mirrors its must-follow rules.
   requests per cycle), kept through a 401 and removed when a different
   account connects. Never send it to another account, never queue a 400, and
   never drop from it without counting the drop for the popup.
+- **The queue is written before it is sent, and sent only on the connection
+  it was read on** (WD-110): a cycle's listings are queued before the first
+  request; the cap is applied when the cycle ends; every request carries the
+  cycle's `connection` (`captureConnection()`), so it goes out with that
+  connection's token or not at all; `watchdeskAccount` always describes the
+  stored token or is empty; an answer with no rule never ends a cycle and is
+  dropped, counted, after 3 attempts.
 - **The WatchDesk origin lives only in `config.js`** (and `manifest.json`'s
   `host_permissions`).
 - **No regression in shipped behaviour:** Open All Tabs, the settings panel,

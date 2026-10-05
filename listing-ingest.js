@@ -25,30 +25,45 @@
 //                ones included, and the next sync removes the watch.
 //   400          WatchDesk refused the batch; sending it again would be
 //                refused again, so it is dropped and recorded, never queued.
-//   anything else (unreachable, rate limited, a 5xx — after the retries of
-//                RETRY_POLICY): WatchDesk is not taking listings right now.
-//                The rest of the cycle's batches are not attempted, and
-//                they are queued.
+//   unreachable, rate limited, a 5xx (after the retries of RETRY_POLICY):
+//                WatchDesk is not taking listings right now. The rest of
+//                the cycle's batches are not attempted; they stay queued,
+//                for as many cycles as it takes.
+//   anything else (403, 413, 422, …: an answer this code has no rule for)
+//                may be about this one batch, so the cycle goes on to the
+//                next. The batch stays queued and is tried again on later
+//                cycles, QUEUE_MAX_ATTEMPTS times in all; then its listings
+//                are dropped and counted like the ones the cap drops
+//                (WD-110).
 //
-// The queue (WD-60): listings that could not be sent wait in
+// The queue (WD-60): listings that have not been sent wait in
 // chrome.storage.local and go out on the next cycle (the next alarm tick or
 // "Check now"), oldest first and before that cycle's own.
+//   - A cycle's own listings are written to it before the first of them is
+//     sent (WD-110), so a worker stopped mid-cycle loses none of them.
 //   - Each listing is held once per watch: queueing a newer reading of a
 //     posting replaces the older copy.
 //   - A listing leaves the queue only after WatchDesk answered 2xx for it
 //     (or 400 / 404, which no retry can change). A worker stopped mid-cycle
 //     therefore sends some again; WatchDesk keeps one row per posting.
-//   - At most QUEUE_MAX_REQUESTS_PER_CYCLE queued requests a cycle, and the
-//     first one that fails ends the cycle, so a long queue cannot come near
-//     WatchDesk's 120 requests a minute per device.
+//   - At most QUEUE_MAX_REQUESTS_PER_CYCLE requests a cycle for what earlier
+//     cycles left, and the first one WatchDesk cannot take ends the cycle,
+//     so a long queue cannot come near WatchDesk's 120 requests a minute
+//     per device.
 //   - It is capped (QUEUE_MAX_LISTINGS, QUEUE_MAX_BYTES). Over the cap the
 //     oldest listings are dropped and counted, and the popup says so until
-//     the user has seen it and everything has since got through.
+//     the user has seen it and everything has since got through. The cap is
+//     applied when a cycle ends, not when its listings are written ahead:
+//     what WatchDesk is about to take is not dropped to make room.
 //   - It belongs to one account, named by the account's email address. It
 //     is sent only while that account is the connected one, so it survives
 //     a refused token and a reconnection to the same account;
 //     account-connection.js removes it when a different account connects.
 //     While the account's email is not known nothing is queued or retried.
+//   - Every request of a cycle is bound to the connection the cycle started
+//     with (WD-110): it goes out with that connection's token or not at
+//     all. A pairing that completes mid-cycle ends the cycle; it cannot
+//     carry the old account's listings to the new one.
 //   - Cycles run one at a time (an alarm and "Check now" can overlap).
 //
 // Storage:
@@ -62,18 +77,28 @@
 //   chrome.storage.local -> watchdeskListingQueue
 //                           { owner, items, dropped, droppedSeen }
 //     owner        the account's email, trimmed and lower-cased.
-//     items        [{ watchId, listing }], oldest first.
-//     dropped      how many listings the cap has dropped and the user has
-//                  not yet been told about.
+//     items        [{ watchId, listing, attempts? }], oldest first.
+//                  `attempts` is how many times the listing was in a
+//                  request that got an answer with no rule; absent until
+//                  the first.
+//     dropped      how many listings the cap, or QUEUE_MAX_ATTEMPTS, has
+//                  dropped and the user has not yet been told about.
 //     droppedSeen  the popup has shown that count.
 //     Absent while there is nothing queued and nothing to tell.
 //   Nothing is kept in memory between cycles: the worker may be stopped at
 //   any point.
 //
-// Nothing here sees the device token, and nothing here logs: a listing's
-// title and URL say what the user is searching for.
+// Nothing here sees the device token (a cycle's connection is a handle that
+// account-connection.js resolves), and nothing here logs: a listing's title
+// and URL say what the user is searching for.
 
-import { getAccountOwner, isConnected, LISTING_QUEUE_KEY, LISTING_SYNC_KEY } from "./account-connection.js";
+import {
+  captureConnection,
+  getAccountOwner,
+  isConnected,
+  LISTING_QUEUE_KEY,
+  LISTING_SYNC_KEY,
+} from "./account-connection.js";
 import { getServerWatchIds } from "./watch-sync.js";
 import { ingestListings, INGEST_MAX_LISTINGS } from "./watchdesk-api.js";
 
@@ -90,6 +115,13 @@ export const QUEUE_MAX_BYTES = 2 * 1024 * 1024;
 // cycle itself and three retries of a request that fails, a cycle stays far
 // below WatchDesk's 120 requests a minute per device.
 export const QUEUE_MAX_REQUESTS_PER_CYCLE = 10;
+// How many cycles a listing may be in a request that WatchDesk answers with
+// something this code has no rule for (WD-110) before it is dropped. One
+// such answer may be a passing fault; three in a row, a cycle apart, is a
+// batch WatchDesk will not take. Not counted: an unreachable or rate-limited
+// WatchDesk and a 5xx, which say nothing about the batch and are waited out
+// for as long as the cap allows.
+export const QUEUE_MAX_ATTEMPTS = 3;
 
 // WatchDesk's limits (lib/validation/listings.ts in its repository). One
 // listing over a limit refuses the whole batch, so a listing that cannot
@@ -188,6 +220,7 @@ async function updateQueue(owner, change) {
 }
 
 const itemKey = (watchId, listingId) => `${watchId}\n${listingId}`;
+const attemptsOf = (item) => (Number.isInteger(item?.attempts) && item.attempts > 0 ? item.attempts : 0);
 
 // Takes listings out of the queue: WatchDesk has them, or will never take
 // them.
@@ -225,37 +258,81 @@ function trimToCap(queue) {
   queue.droppedSeen = false;
 }
 
-// Adds batches that could not be sent, newest last. A listing already
-// queued for the same watch is replaced by this newer reading of it.
+// Applies the cap once a cycle is over: with what WatchDesk took gone, what
+// is left is what has to wait.
+function trim(owner) {
+  return updateQueue(owner, (queue) => {
+    const before = queue.items.length;
+    trimToCap(queue);
+    return queue.items.length !== before;
+  });
+}
+
+// Writes a cycle's batches into the queue, newest last, before any of them
+// is sent. A listing already queued for the same watch is replaced by this
+// newer reading of it, which keeps the attempts counted against the older
+// one. The cap is not applied here: WatchDesk may be about to take all of
+// it, and trim() sees to what it does not.
 function enqueue(owner, batches) {
   return updateQueue(owner, (queue) => {
-    const items = new Map(queue.items.map((item) => [itemKey(item.watchId, item.listing.id), item]));
+    const waiting = new Map(queue.items.map((item) => [itemKey(item.watchId, item.listing.id), item]));
+    const fresh = new Map();
     for (const { watchId, listings } of batches) {
       for (const listing of listings) {
         const key = itemKey(watchId, listing.id);
-        items.delete(key);
-        items.set(key, { watchId, listing });
+        const attempts = attemptsOf(fresh.get(key) ?? waiting.get(key));
+        waiting.delete(key);
+        fresh.delete(key);
+        fresh.set(key, attempts > 0 ? { watchId, listing, attempts } : { watchId, listing });
       }
     }
-    queue.items = [...items.values()];
-    trimToCap(queue);
+    queue.items = [...waiting.values(), ...fresh.values()];
     return true;
   });
 }
 
-// The queue as requests: one watch each, at most INGEST_MAX_LISTINGS
-// listings each, the watch with the oldest listing first, and no more than
-// a cycle may send.
-function queuedBatches(queue) {
+// WatchDesk answered a batch with something there is no rule for. Counts
+// the attempt against each of its listings, and drops, and counts for the
+// popup, the ones that have now had QUEUE_MAX_ATTEMPTS.
+function strike(owner, batch) {
+  const struck = new Set(batch.listings.map((listing) => itemKey(batch.watchId, listing.id)));
+  return updateQueue(owner, (queue) => {
+    let changed = false;
+    const kept = [];
+    for (const item of queue.items) {
+      if (!struck.has(itemKey(item.watchId, item.listing.id))) {
+        kept.push(item);
+        continue;
+      }
+      changed = true;
+      const attempts = attemptsOf(item) + 1;
+      if (attempts < QUEUE_MAX_ATTEMPTS) {
+        kept.push({ ...item, attempts });
+      } else {
+        queue.dropped += 1;
+        queue.droppedSeen = false;
+      }
+    }
+    queue.items = kept;
+    return changed;
+  });
+}
+
+// What earlier cycles left in the queue, as requests: one watch each, at
+// most INGEST_MAX_LISTINGS listings each, the watch with the oldest listing
+// first, and no more than a cycle may send. `fresh` holds the keys of the
+// listings this cycle read, which go out in the cycle's own requests.
+function queuedBatches(queue, fresh) {
   const byWatch = new Map();
   for (const { watchId, listing } of queue.items) {
+    if (fresh.has(itemKey(watchId, listing.id))) continue;
     if (!byWatch.has(watchId)) byWatch.set(watchId, []);
     byWatch.get(watchId).push(listing);
   }
   const batches = [];
   for (const [watchId, listings] of byWatch) {
     for (let start = 0; start < listings.length; start += INGEST_MAX_LISTINGS) {
-      batches.push({ watchId, listings: listings.slice(start, start + INGEST_MAX_LISTINGS), queued: true });
+      batches.push({ watchId, listings: listings.slice(start, start + INGEST_MAX_LISTINGS) });
     }
   }
   return batches.slice(0, QUEUE_MAX_REQUESTS_PER_CYCLE);
@@ -306,34 +383,51 @@ function toBatches(checked, serverIds) {
   return batches;
 }
 
+// WatchDesk as a whole is not taking listings: asking again later may work,
+// and asking for the next batch now would not.
+function isOutage(result) {
+  return (
+    result.kind === "unreachable" || result.kind === "rate-limited" || (result.kind === "error" && result.status >= 500)
+  );
+}
+
 async function runCycle(checked) {
-  if (!(await isConnected())) return { status: "not-connected", sent: 0, unsent: 0 };
+  // The connection every request of this cycle is bound to: none of them
+  // can go out with a token stored after this point.
+  const connection = await captureConnection();
+  if (!connection) return { status: "not-connected", sent: 0, unsent: 0 };
 
   // Whose listings these are. Null while the account's email is not known:
   // the cycle's own listings are still sent, but nothing is queued or
   // retried.
-  const owner = await getAccountOwner();
-  const queued = queuedBatches(await readQueue(owner));
-  const batches = [...queued, ...toBatches(checked, new Set(await getServerWatchIds()))];
+  const { owner } = connection;
+  const fresh = toBatches(checked, new Set(await getServerWatchIds()));
+  // Written before the first send, so that a worker stopped anywhere below
+  // leaves them for the next cycle.
+  if (owner && fresh.length > 0) await enqueue(owner, fresh);
+  const freshKeys = new Set(
+    fresh.flatMap((batch) => batch.listings.map((listing) => itemKey(batch.watchId, listing.id))),
+  );
+  const batches = [...queuedBatches(await readQueue(owner), freshKeys), ...fresh];
   if (batches.length === 0) return { status: "nothing-to-send", sent: 0, unsent: 0 };
 
   const deleted = new Set(); // watches WatchDesk no longer has
   let sent = 0;
   let refused = 0;
-  let unauthorized = false;
-  let unsent = []; // batches WatchDesk may still take later
+  let unsent = 0; // requests WatchDesk may still take later
+  let disconnected = false;
   for (let index = 0; index < batches.length; index++) {
     const batch = batches[index];
     if (deleted.has(batch.watchId)) continue;
-    // Another account was connected while this cycle was sending: what is
-    // left was read for the old one.
+    // Another account's name is on the connection: what is left was read
+    // for the old one.
     if (owner && (await isConnected()) && (await getAccountOwner()) !== owner) {
-      return { status: "not-connected", sent, unsent: 0 };
+      disconnected = true;
+      break;
     }
-    const result = await ingestListings(batch.watchId, batch.listings);
+    const result = await ingestListings(batch.watchId, batch.listings, connection);
     if (result.kind === "ok") {
       sent += 1;
-      // Also takes out an older queued copy of what the cycle just sent.
       await forget(owner, batch);
     } else if (result.kind === "not-found") {
       deleted.add(batch.watchId);
@@ -341,21 +435,28 @@ async function runCycle(checked) {
     } else if (result.kind === "invalid") {
       refused += 1;
       await forget(owner, batch);
-    } else {
-      unauthorized = result.kind === "unauthorized";
-      unsent = batches.slice(index).filter((left) => !deleted.has(left.watchId));
+    } else if (result.kind === "connection-changed" || result.kind === "unauthorized") {
+      // The token was replaced, discarded or refused; nothing was sent to
+      // anyone else. What is left stays queued for this account.
+      disconnected = true;
       break;
+    } else if (isOutage(result)) {
+      unsent += batches.slice(index).filter((left) => !deleted.has(left.watchId)).length;
+      break;
+    } else {
+      // No rule for this answer: it may be this batch's alone, so the ones
+      // behind it still go.
+      unsent += 1;
+      await strike(owner, batch);
     }
   }
 
-  // What was queued already is still there; the cycle's own joins it.
-  const fresh = unsent.filter((batch) => !batch.queued);
-  if (fresh.length > 0) await enqueue(owner, fresh);
-  if (unauthorized) return { status: "not-connected", sent, unsent: 0 };
+  await trim(owner);
+  if (disconnected) return { status: "not-connected", sent, unsent: 0 };
 
-  const failed = unsent.length > 0 || refused > 0;
+  const failed = unsent > 0 || refused > 0;
   await recordCycle(owner, failed);
-  return { status: failed ? "failed" : "ok", sent, unsent: unsent.length };
+  return { status: failed ? "failed" : "ok", sent, unsent };
 }
 
 // One cycle at a time: an alarm's cycle and "Check now" can overlap, and two

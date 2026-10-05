@@ -162,9 +162,10 @@ last attempt couldn't be sent. Listings that couldn't be sent (WatchDesk
 down, no network, a disconnected browser) are kept in this browser and sent
 on the next check, oldest first; the line says how many are waiting. Up to
 2,000 are kept: beyond that the oldest are dropped, and the line says how
-many until you have seen it and everything else has been sent. They only
-ever go to the account they were read for: connecting a different account
-discards them. The feed in the popup and the other settings stay local.
+many until you have seen it and everything else has been sent. A listing
+WatchDesk answers with an error three checks in a row is dropped and counted
+the same way, and does not hold up the others. They only ever go to the
+account they were read for: connecting a different account discards them. The feed in the popup and the other settings stay local.
 Without an account nothing changes: the watches stay in this
 browser and nothing is sent anywhere.
 
