@@ -2,6 +2,7 @@ import { SOUND_OPTIONS } from "./sounds.js";
 import { SITES, siteForUrl, pickWatchTabFromCandidates } from "./sites.js";
 import { initAccountCard } from "./popup-account.js";
 import { renderWatchSync, renderWatchChange } from "./popup-watch-sync.js";
+import { initWatcherControl, renderWatcher } from "./popup-watcher.js";
 
 // Must match background.js's own ALARM_NAME — they're separate module
 // graphs (background service worker vs. popup page) with no shared import,
@@ -273,15 +274,20 @@ async function renderCheckStatus() {
     alarm = null;
   }
 
+  // WD-71: paused, there is no alarm and so no countdown; say why.
+  const isPaused = lastState.watcher?.state === "paused";
+
   const parts = [];
   parts.push(lastRunAt ? `Checked ${fmtRelative(lastRunAt)}` : "Not checked yet");
-  if (alarm?.scheduledTime) {
+  if (isPaused) {
+    parts.push("watching paused, no check scheduled");
+  } else if (alarm?.scheduledTime) {
     const minsLeft = Math.round((alarm.scheduledTime - Date.now()) / 60000);
     parts.push(minsLeft <= 0 ? "next check any moment" : `next check in ~${minsLeft}m`);
   }
   statusEl.innerHTML = "";
   const dot = document.createElement("span");
-  dot.className = "check-status-dot";
+  dot.className = isPaused ? "check-status-dot is-paused" : "check-status-dot";
   statusEl.appendChild(dot);
   statusEl.appendChild(document.createTextNode(parts.join(" · ")));
 
@@ -1295,6 +1301,7 @@ function renderAll() {
   if (!lastState) return;
   renderWatchSync(lastState.watchSync);
   ackListingDrops(lastState.watchSync);
+  renderWatcher(lastState.watcher);
   renderWatchList(lastState.settings, lastState.runState);
   renderFeed(lastState.runState);
   syncControls(lastState.settings);
@@ -1395,6 +1402,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (changed && lastState) syncWatchesAndRender().catch(() => {});
   };
   initAccountCard({ send, setButtonBusy, onState: onAccountState }).catch(() => {});
+
+  // WD-71: Start Watching / Pause Watching. The worker answers with the
+  // whole popup state, so the status line and its countdown follow.
+  initWatcherControl({
+    send,
+    onState: (state) => {
+      lastState = state;
+      renderAll();
+    },
+  });
 
   // WD-59: the worker says when a check's listings have (or have not)
   // reached WatchDesk, which can be after it answered "check-now".

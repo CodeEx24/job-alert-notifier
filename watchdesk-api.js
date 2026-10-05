@@ -30,7 +30,8 @@
 // GET /api/auth/device/poll — docs/tickets/WD-41.md; GET
 // /api/devices/current — docs/tickets/WD-45.md; GET and POST /api/watches,
 // PATCH and DELETE /api/watches/[id] — docs/tickets/WD-52.md; POST
-// /api/listings/ingest — docs/tickets/WD-57.md.
+// /api/listings/ingest — docs/tickets/WD-57.md; GET and PUT /api/settings —
+// docs/tickets/WD-56.md and WD-71.md.
 
 import { WATCHDESK_ORIGIN } from "./config.js";
 
@@ -383,6 +384,59 @@ export async function updateWatch(id, patch) {
 export async function deleteWatch(id) {
   const response = await authorizedRequest(`/api/watches/${encodeURIComponent(id)}`, { method: "DELETE" });
   return response.status === 200 ? { kind: "ok" } : watchFailure(response);
+}
+
+// ---------- settings (WD-71; contract in WD-56 and WD-71) ----------
+//
+// The account's settings, as WatchDesk keeps them: { intervalMinutes,
+// soundId, notificationsMuted, titleFilter: { enabled, keywords },
+// watcherState }. Only watcher-state.js calls these, to tell WatchDesk
+// whether watching is running or paused; nothing here is copied into this
+// browser's own settings.
+//
+// PUT replaces every setting (one left out is a 400), so a caller changes
+// one by reading them all and sending them all back. Each call is one
+// attempt, like the watch calls: they run on every sync until WatchDesk has
+// the state, so a retry loop would only repeat what the next sync does.
+//
+// `connection` binds both calls to one token (WD-110), so settings read
+// from one account are never written to the account that connected next.
+
+const SETTINGS_TIMEOUT_MS = 10000;
+
+// { kind: "ok", settings } — the answer without its `updatedAt`, ready to be
+// sent back — or a failure, the same kinds as a watch call, or
+// { kind: "connection-changed" }.
+function settingsResult(response) {
+  if (response.connectionChanged) return { kind: "connection-changed" };
+  if (response.status !== 200) return watchFailure(response);
+  const body = response.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { kind: "error", status: 200 };
+  const settings = { ...body };
+  delete settings.updatedAt;
+  return { kind: "ok", settings };
+}
+
+// GET /api/settings. 404 ("not-found") is an account with no settings row.
+export async function readSettings(connection) {
+  const response = await authorizedRequest("/api/settings", {
+    idempotent: false,
+    timeoutMs: SETTINGS_TIMEOUT_MS,
+    connection,
+  });
+  return settingsResult(response);
+}
+
+// PUT /api/settings with the whole settings object → the settings as they
+// now are.
+export async function replaceSettings(settings, connection) {
+  const response = await authorizedRequest("/api/settings", {
+    method: "PUT",
+    body: settings,
+    timeoutMs: SETTINGS_TIMEOUT_MS,
+    connection,
+  });
+  return settingsResult(response);
 }
 
 // ---------- listings (WD-59; contract in WD-57) ----------

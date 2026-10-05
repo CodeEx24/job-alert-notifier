@@ -225,6 +225,41 @@ describe("describeWatchSync: listings waiting to be sent, and listings dropped (
   });
 });
 
+describe("describeWatchSync: a watcher state WatchDesk has not been given (WD-71)", () => {
+  const base = { mode: "account", offline: false, lastSyncedAt: minutesAgo(2), localOnly: 0 };
+  const listings = { lastIngestedAt: null, failed: false, queued: 0, dropped: 0 };
+
+  it("says nothing about it while WatchDesk has the state", () => {
+    for (const watcherUnsent of [null, undefined, false, "stopped"]) {
+      expect(describeWatchSync({ ...base, listings, watcherUnsent }, NOW)).toEqual({
+        tone: "ok",
+        lastSynced: "Last synced 2m ago",
+        text: "Nothing waiting to be sent",
+      });
+    }
+  });
+
+  it.each(["paused", "running"])("warns that WatchDesk has not been told watching is %s, and that it will be", (state) => {
+    expect(describeWatchSync({ ...base, listings, watcherUnsent: state }, NOW)).toEqual({
+      tone: "warning",
+      lastSynced: "Last synced 2m ago",
+      text: `Nothing waiting to be sent · WatchDesk hasn't been told that watching is ${state} yet; it will be sent again`,
+    });
+  });
+
+  it("offline stays offline and says it too", () => {
+    const view = describeWatchSync({ ...base, offline: true, listings, watcherUnsent: "paused" }, NOW);
+    expect(view.tone).toBe("offline");
+    expect(view.text).toMatch(/^Offline — couldn't reach WatchDesk\./);
+    expect(view.text).toContain("WatchDesk hasn't been told that watching is paused yet; it will be sent again");
+  });
+
+  it("holds no time, so the live region is not rewritten as the minutes pass", () => {
+    const status = { ...base, listings, watcherUnsent: "paused" };
+    expect(describeWatchSync(status, NOW + 5 * 60000).text).toBe(describeWatchSync(status, NOW).text);
+  });
+});
+
 describe("renderWatchSync", () => {
   const line = () => doc.getElementById("watch-sync-status");
   const last = () => doc.getElementById("watch-sync-last").textContent;
