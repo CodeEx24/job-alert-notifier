@@ -215,7 +215,67 @@ describe("a cycle's listings are queued before they are sent", () => {
 });
 
 describe("a batch WatchDesk answers with something there is no rule for", () => {
-  it.each([403, 409, 413, 422])("a %i does not end the cycle: the batches behind it still go", async (status) => {
+  describe("a 403: WatchDesk is not taking this account's listings", () => {
+    const forbid = () => api.setIngestRoute(() => api.json(403, { error: "Verify your email to continue." }));
+
+    it("ends the cycle like an outage, asked once, and everything stays queued without an attempt counted", async () => {
+      forbid();
+      const outcome = await ingest.ingestCheckedListings(cycle());
+
+      expect(outcome).toEqual({ status: "failed", sent: 0, unsent: 3 });
+      expect(sentIds()).toEqual(["a:401"]);
+      expect(queue()).toEqual({
+        owner: ADA,
+        items: [
+          { watchId: watch.id, listing: job(1) },
+          { watchId: second.id, listing: job(2) },
+          { watchId: third.id, listing: job(3) },
+        ],
+        dropped: 0,
+        droppedSeen: false,
+      });
+    });
+
+    it("for many cycles drops nothing, and says so in the sync line's status", async () => {
+      forbid();
+      await ingest.ingestCheckedListings(cycle());
+      for (let n = 0; n < 20; n++) await ingest.ingestCheckedListings([]);
+
+      expect(queuedIds()).toEqual(["a:401", "b:402", "c:403"]);
+      expect(queue().items.every((item) => !("attempts" in item))).toBe(true);
+      // What the popup's line is drawn from: amber, three waiting, none dropped.
+      expect(await ingest.getListingSyncStatus()).toEqual({ lastIngestedAt: null, failed: true, queued: 3, dropped: 0 });
+
+      // The user puts it right; the next cycle sends everything.
+      recover();
+      expect(await ingest.ingestCheckedListings([])).toEqual({ status: "ok", sent: 3, unsent: 0 });
+      expect(api.listings).toHaveLength(3);
+      expect(queue()).toBeUndefined();
+    });
+
+    it("does not add to the attempts a listing already has", async () => {
+      refuseFirstWatchWith(422);
+      await ingest.ingestCheckedListings(cycle([job(1)], [], []));
+      forbid();
+      for (let n = 0; n < 5; n++) await ingest.ingestCheckedListings([]);
+
+      expect(queue().items).toEqual([{ watchId: watch.id, listing: job(1), attempts: 1 }]);
+    });
+  });
+
+  it.each([413, 422])("a %i for many cycles drops the batch after 3 attempts, counted in the warning", async (status) => {
+    refuseFirstWatchWith(status);
+    await ingest.ingestCheckedListings(cycle());
+    for (let n = 0; n < 20; n++) await ingest.ingestCheckedListings([]);
+
+    // Three requests for it in all, then never again.
+    expect(sentIds().filter((sent) => sent === "a:401")).toHaveLength(3);
+    expect(queue()).toEqual({ owner: ADA, items: [], dropped: 1, droppedSeen: false });
+    expect(await ingest.getListingSyncStatus()).toMatchObject({ queued: 0, dropped: 1 });
+    expect(api.listings).toHaveLength(2);
+  });
+
+  it.each([402, 409, 413, 422])("a %i does not end the cycle: the batches behind it still go", async (status) => {
     refuseFirstWatchWith(status);
     const outcome = await ingest.ingestCheckedListings(cycle());
 

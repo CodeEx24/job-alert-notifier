@@ -29,7 +29,11 @@
 //                WatchDesk is not taking listings right now. The rest of
 //                the cycle's batches are not attempted; they stay queued,
 //                for as many cycles as it takes.
-//   anything else (403, 413, 422, …: an answer this code has no rule for)
+//   403          WatchDesk is not taking this account's listings (an
+//                unverified email, say): the user can often put that right,
+//                and it says nothing against the batch. Handled like an
+//                outage: the cycle ends, and everything stays queued.
+//   anything else (413, 422, …: an answer this code has no rule for)
 //                may be about this one batch, so the cycle goes on to the
 //                next. The batch stays queued and is tried again on later
 //                cycles, QUEUE_MAX_ATTEMPTS times in all; then its listings
@@ -119,8 +123,8 @@ export const QUEUE_MAX_REQUESTS_PER_CYCLE = 10;
 // something this code has no rule for (WD-110) before it is dropped. One
 // such answer may be a passing fault; three in a row, a cycle apart, is a
 // batch WatchDesk will not take. Not counted: an unreachable or rate-limited
-// WatchDesk and a 5xx, which say nothing about the batch and are waited out
-// for as long as the cap allows.
+// WatchDesk, a 5xx and a 403, which say nothing about the batch and are
+// waited out for as long as the cap allows.
 export const QUEUE_MAX_ATTEMPTS = 3;
 
 // WatchDesk's limits (lib/validation/listings.ts in its repository). One
@@ -383,11 +387,15 @@ function toBatches(checked, serverIds) {
   return batches;
 }
 
-// WatchDesk as a whole is not taking listings: asking again later may work,
-// and asking for the next batch now would not.
+// WatchDesk is not taking listings, as a whole or from this account (403):
+// asking again later may work, and asking for the next batch now would not.
+// Nothing here is the batch's fault, so none of it counts as an attempt.
 function isOutage(result) {
   return (
-    result.kind === "unreachable" || result.kind === "rate-limited" || (result.kind === "error" && result.status >= 500)
+    result.kind === "unreachable" ||
+    result.kind === "rate-limited" ||
+    result.kind === "forbidden" ||
+    (result.kind === "error" && result.status >= 500)
   );
 }
 

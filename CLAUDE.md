@@ -79,8 +79,10 @@ Reference documents in the WatchDesk repository:
   connection's token or not at all: never read the token again for a batch
   that was read earlier. `watchdeskAccount` must always describe the stored
   token or be empty. An answer the code has no rule for (not 2xx, 400, 401,
-  404, 429 or 5xx) never ends a cycle: the batch is retried on later cycles,
-  3 attempts in all, then dropped and counted.
+  403, 404, 429 or 5xx) never ends a cycle: the batch is retried on later
+  cycles, 3 attempts in all, then dropped and counted. A 403 is the account
+  being refused, not the batch: it ends the cycle like an outage and never
+  counts as an attempt.
 - **The WatchDesk origin is named in one place:** `config.js`, plus the same
   origins in `manifest.json`'s `host_permissions`. `tests/config.test.js`
   enforces this.

@@ -38,7 +38,8 @@ this file mirrors its must-follow rules.
   cycle's `connection` (`captureConnection()`), so it goes out with that
   connection's token or not at all; `watchdeskAccount` always describes the
   stored token or is empty; an answer with no rule never ends a cycle and is
-  dropped, counted, after 3 attempts.
+  dropped, counted, after 3 attempts; a 403 is waited out like an outage and
+  never counted.
 - **The WatchDesk origin lives only in `config.js`** (and `manifest.json`'s
   `host_permissions`).
 - **No regression in shipped behaviour:** Open All Tabs, the settings panel,
