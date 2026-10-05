@@ -124,6 +124,10 @@ describe("popup.html keeps every control of the shipped popup", () => {
 // document order. The shipped copy has none of them, so this is skipped
 // against it.
 const ADDED_SINCE_SHIPPED = [
+  // WD-111: the hint under Reset Extension. The shipped popup has the same
+  // paragraph with the same words and no id; the id lets popup.js say what
+  // Reset does with an account connected.
+  ["reset-extension-hint", "p"],
   // WD-71: Start Watching / Pause Watching.
   ["watcher-control", "section"],
   ["watcher-status", "span"],

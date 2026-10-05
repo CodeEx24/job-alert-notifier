@@ -55,8 +55,10 @@ async function syncWatchesAndRender() {
   if (status?.mode !== "account" && lastState?.watchSync?.mode !== "account") return;
   lastState = await send({ type: "get-state" });
   // Don't rebuild the list under someone who is renaming a watch.
-  if (editingWatchId) renderWatchSync(lastState.watchSync);
-  else renderAll();
+  if (editingWatchId) {
+    renderWatchSync(lastState.watchSync);
+    renderResetHint(lastState.watchSync);
+  } else renderAll();
 }
 
 // --- Tab reuse helpers --------------------------------------------------
@@ -1258,6 +1260,22 @@ function renderSettingsPanel(settings) {
   document.getElementById("resume-all").disabled = !anyPaused;
 }
 
+// WD-111: the hint under Reset Extension says what Reset does in this mode,
+// as its confirm already did (WD-54). With no account connected it is left
+// exactly as popup.html has it; those words are kept from the first render
+// for when an account is disconnected while the popup is open.
+const RESET_HINT_ACCOUNT =
+  "Clears the feed and all settings back to defaults. Your watches are kept: they belong to your WatchDesk account. Can't be undone.";
+let resetHintLocal = null;
+
+function renderResetHint(watchSync) {
+  const hint = document.getElementById("reset-extension-hint");
+  if (!hint) return;
+  if (resetHintLocal === null) resetHintLocal = hint.textContent;
+  const text = watchSync?.mode === "account" ? RESET_HINT_ACCOUNT : resetHintLocal;
+  if (hint.textContent !== text) hint.textContent = text;
+}
+
 // Shows the installed version in Settings (always, so it's checkable any
 // time), and — the more direct answer to "how do I know it actually
 // updated" — a one-time "Updated to vX.Y.Z" banner right after a real
@@ -1306,6 +1324,7 @@ function renderAll() {
   renderFeed(lastState.runState);
   syncControls(lastState.settings);
   renderSettingsPanel(lastState.settings);
+  renderResetHint(lastState.watchSync);
   renderCheckStatus().catch(() => {});
   renderVersionInfo(lastState.version);
 }
@@ -1419,6 +1438,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (message?.type !== "watch-sync-changed" || !lastState) return;
     lastState.watchSync = message.watchSync;
     renderWatchSync(lastState.watchSync);
+    renderResetHint(lastState.watchSync);
     ackListingDrops(lastState.watchSync);
   });
 
@@ -1482,8 +1502,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     await changeWatches({ type: "resume-all" });
   });
 
+  // WD-111: mute here, and the interval and the sound further down, also
+  // update the state the popup holds once the worker has stored the value,
+  // as the keyword filter below always has. Without that, the next
+  // re-render from that state (a watch's Edit, a sync) put the old value
+  // back in the control, and Export wrote the old value to the file, until
+  // the popup was opened again.
   document.getElementById("mute-notifications").addEventListener("change", async (e) => {
-    await send({ type: "set-notifications-muted", muted: e.target.checked });
+    const muted = e.target.checked;
+    const result = await send({ type: "set-notifications-muted", muted });
+    if (result?.ok && lastState) lastState.settings.notificationsMuted = muted;
   });
 
   // --- Title-keyword filter (Settings) ---
@@ -1653,11 +1681,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   document.getElementById("interval").addEventListener("change", async (e) => {
-    await send({ type: "set-interval", minutes: Number(e.target.value) });
+    const minutes = Number(e.target.value);
+    const result = await send({ type: "set-interval", minutes });
+    if (result?.ok && lastState) lastState.settings.intervalMinutes = minutes;
   });
 
   document.getElementById("sound").addEventListener("change", async (e) => {
-    await send({ type: "set-sound", soundId: e.target.value });
+    const soundId = e.target.value;
+    const result = await send({ type: "set-sound", soundId });
+    if (result?.ok && lastState) lastState.settings.soundId = soundId;
   });
 
   document.getElementById("test-sound").addEventListener("click", async () => {

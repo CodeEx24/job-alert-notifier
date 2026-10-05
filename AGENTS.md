@@ -21,7 +21,10 @@ this file mirrors its must-follow rules.
   `chrome.storage.sync` as before; connected, WatchDesk is the truth,
   `watches` is the last-synced copy, and every change goes through
   `watch-sync.js` (API first, refused when unreachable). Never change what
-  an unconnected browser does.
+  an unconnected browser does. Connected, the URL migration in
+  `getSettings()` is skipped, Import goes through `importAccountWatches()`
+  and imports nothing when WatchDesk does not answer, and the install
+  handler writes no settings (WD-111).
 - **Listings go to WatchDesk after the check, never in it** (WD-59):
   `listing-ingest.js` runs once a cycle is saved and notified, cannot delay
   or fail a check, sends nothing when not connected, names a watch only by

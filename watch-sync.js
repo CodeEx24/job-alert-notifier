@@ -22,6 +22,9 @@
 //     uploaded. So connecting never loses a watch and never doubles one.
 // A watch that takes a server id keeps its run state (seen jobs, last
 // result), moved from its old id, so it does not start over.
+// An import (importAccountWatches, WD-111) is a sync in which the backup
+// file's watches stand in for the copy; it changes nothing unless WatchDesk
+// answers.
 //
 // Storage:
 //   chrome.storage.sync  -> watches            the copy (as before)
@@ -178,29 +181,35 @@ export async function getServerWatchIds() {
 
 // ---------- sync ----------
 
-async function runSync() {
-  if (!(await isConnected())) return;
+// Resolves to WatchDesk's answer to the list request ({ kind, … }), or null
+// when not connected. With `imported` (WD-111), those watches take the place
+// of the copy once WatchDesk has answered, every one of them the browser's
+// own: matched to the account by URL or uploaded, never read as "deleted on
+// WatchDesk" because its id is missing there. Until WatchDesk has answered,
+// the copy is not touched.
+async function runSync(imported) {
+  if (!(await isConnected())) return null;
 
   const listed = await listWatches();
   // A 401 has already discarded the token (and this module's state with it).
-  if (listed.kind === "unauthorized") return;
+  if (listed.kind === "unauthorized") return listed;
   if (listed.kind !== "ok") {
     await setOffline(true);
-    return;
+    return listed;
   }
 
   const state = await readState();
   const stored = await readCopy();
   // A browser that never stored a list is showing its default watch.
-  const copy = stored.length > 0 || state.lastSyncedAt != null ? stored : config.unsyncedFallback();
+  const copy = imported || (stored.length > 0 || state.lastSyncedAt != null ? stored : config.unsyncedFallback());
 
   const onServer = new Set(listed.watches.map((w) => w.id));
   const byUrl = new Map();
   for (const watch of listed.watches) {
     if (!byUrl.has(watch.url)) byUrl.set(watch.url, watch);
   }
-  const known = new Set(state.serverIds);
-  const rejected = new Set(state.rejectedIds);
+  const known = new Set(imported ? [] : state.serverIds);
+  const rejected = new Set(imported ? [] : state.rejectedIds);
 
   const idMap = new Map(); // own watch id -> the server id it became
   const removedIds = [];
@@ -239,7 +248,7 @@ async function runSync() {
       if (!byUrl.has(result.watch.url)) byUrl.set(result.watch.url, result.watch);
       continue;
     }
-    if (result.kind === "unauthorized") return;
+    if (result.kind === "unauthorized") return result;
     // A 400 will be a 400 next time too. Anything else (offline, rate
     // limit, unverified email) ends the uploads for this sync; the next
     // one offers what is left again.
@@ -256,6 +265,7 @@ async function runSync() {
     lastSyncedAt: Date.now(),
     offline: false,
   });
+  return listed;
 }
 
 // Brings the copy in step with WatchDesk. Sends nothing when not connected.
@@ -420,12 +430,24 @@ export function removeAccountWatch(id) {
   });
 }
 
-// After an import replaced the copy: every watch in it is the browser's own
-// again, so the next sync matches each to WatchDesk by URL or uploads it,
-// instead of reading a missing id as "deleted on WatchDesk".
-export function forgetKnownWatches() {
+// Import (WD-54, WD-111): adds a backup file's watches to the account. Like
+// every other change it asks WatchDesk first: the account's list is fetched,
+// each of `watches` is matched to it by URL or uploaded, and the copy
+// becomes the account's list. When WatchDesk does not answer with the list,
+// nothing is imported and the copy stays as it was, so the file's watches
+// are never shown as the list without being on WatchDesk. A watch WatchDesk
+// then refuses, or cannot take just now, stays in this browser and is
+// counted as `localOnly`, as after any sync.
+export function importAccountWatches(watches) {
   return withLock(async () => {
-    const state = await readState();
-    await writeState({ ...state, serverIds: [], rejectedIds: [] });
+    try {
+      const listed = await runSync(watches);
+      if (listed?.kind === "ok") return { ok: true };
+      return { ok: false, error: `Nothing was imported. ${failureMessage(listed || { kind: "unauthorized" })}` };
+    } catch {
+      // For example chrome.storage.sync refusing a list over its quota.
+      await setOffline(true).catch(() => {});
+      return failed({ kind: "error" });
+    }
   });
 }

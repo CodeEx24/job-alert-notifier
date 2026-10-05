@@ -15,7 +15,10 @@ function json(status, body, headers = {}) {
   });
 }
 
-export function installFakeWatchDesk({ now = () => Date.now() } = {}) {
+// `saveUrl(url)` is what POST /api/watches stores for a URL it is sent. The
+// real route normalises it (lib/sites.ts in the WatchDesk repository); here
+// it is stored as sent unless a test says otherwise (WD-111).
+export function installFakeWatchDesk({ now = () => Date.now(), saveUrl = (url) => url } = {}) {
   const requests = [];
   const pollAnswers = [];
   let pollDefault = () => json(200, { status: "pending" });
@@ -83,7 +86,7 @@ export function installFakeWatchDesk({ now = () => Date.now() } = {}) {
             fieldErrors: { url: ["Enter a search URL on OnlineJobs.ph, Glassdoor, LinkedIn or Upwork"] },
           });
         }
-        return json(201, addWatch(request.body));
+        return json(201, addWatch({ ...request.body, url: saveUrl(request.body.url) }));
       }
     }
     const index = watches.findIndex((w) => w.id === id);
