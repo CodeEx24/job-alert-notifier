@@ -99,6 +99,42 @@ export function installFakeWatchDesk({ now = () => Date.now() } = {}) {
     return json(405, { error: "Method not allowed." });
   };
 
+  // The account's listings (WD-57's route): one per site and posting,
+  // however often it is sent.
+  const listings = [];
+  let ingestRoute = () => undefined;
+  const answerIngest = (request) => {
+    const scripted = ingestRoute(request);
+    if (scripted) return scripted;
+    if (!request.headers.Authorization) return json(401, { error: "Sign in to continue." });
+    const sent = request.body?.listings;
+    if (!Array.isArray(sent) || sent.length > 200) {
+      return json(400, {
+        error: "Check the highlighted fields.",
+        fieldErrors: { listings: ["Send at most 200 listings in one request"] },
+      });
+    }
+    const watch = watches.find((w) => w.id === request.body.watchId);
+    if (!watch) return json(404, { error: "Watch not found." });
+    const inserted = [];
+    const inBatch = new Set();
+    for (const listing of sent) {
+      const sourceKey = `${watch.siteId}:${listing.id}`;
+      if (inBatch.has(sourceKey)) continue;
+      inBatch.add(sourceKey);
+      if (listings.some((row) => row.sourceKey === sourceKey)) continue;
+      const row = { listingId: `listing-${listings.length + 1}`, sourceKey, watchId: watch.id, listing };
+      listings.push(row);
+      inserted.push({ id: row.listingId, jobId: listing.id });
+    }
+    return json(200, { watchId: watch.id, siteId: watch.siteId, received: inBatch.size, inserted });
+  };
+
+  // A job site's own page. Unreachable unless a test says what it answers.
+  let siteAnswer = () => {
+    throw new TypeError("Failed to fetch");
+  };
+
   const fetchMock = vi.fn(async (url, init = {}) => {
     const parsed = new URL(url);
     const request = {
@@ -114,7 +150,7 @@ export function installFakeWatchDesk({ now = () => Date.now() } = {}) {
       at: now(),
     };
     requests.push(request);
-    if (parsed.origin !== WATCHDESK_ORIGIN) throw new TypeError("Failed to fetch");
+    if (parsed.origin !== WATCHDESK_ORIGIN) return siteAnswer(request);
     if (request.path === "/api/auth/device/start") return startAnswer(request);
     if (request.path === "/api/auth/device/poll") {
       const answer = pollAnswers.length ? pollAnswers.shift() : pollDefault;
@@ -122,6 +158,7 @@ export function installFakeWatchDesk({ now = () => Date.now() } = {}) {
     }
     if (request.path === "/api/devices/current") return currentAnswer(request);
     if (request.path === "/api/watches" || request.path.startsWith("/api/watches/")) return answerWatches(request);
+    if (request.path === "/api/listings/ingest") return answerIngest(request);
     return json(404, { error: "Not found." });
   });
 
@@ -152,6 +189,18 @@ export function installFakeWatchDesk({ now = () => Date.now() } = {}) {
     // send instead of the store's, or nothing to let the store answer.
     setWatchRoute: (answer) => {
       watchRoute = answer;
+    },
+    // The account's stored listings ({ listingId, sourceKey, watchId,
+    // listing }), and the calls made to the ingest route.
+    listings,
+    ingestCalls: () => requests.filter((r) => r.path === "/api/listings/ingest"),
+    // Scripts the ingest route, like setWatchRoute.
+    setIngestRoute: (answer) => {
+      ingestRoute = answer;
+    },
+    // What a job site answers a fetch of its page: `answer(request)`.
+    setSite: (answer) => {
+      siteAnswer = answer;
     },
     // The request never gets an answer; it ends when the caller aborts it.
     hang: ({ signal }) =>

@@ -17,6 +17,8 @@
 //     With a WatchDesk account connected (WD-54), `watches` is the
 //     last-synced copy of the account's list and every change to it goes
 //     through watch-sync.js — see that file.
+//     After each cycle a connected browser also posts what the cycle read
+//     to WatchDesk (WD-59) — see listing-ingest.js.
 //   chrome.storage.local -> { seenIds: {watchId: [ids]}, lastChecked: {},
 //                              lastResult: {}, badgeCount, feed: [...] }
 //     (larger / more frequently written run-state, kept local only)
@@ -42,6 +44,7 @@ import {
   removeAccountWatch,
   forgetKnownWatches,
 } from "./watch-sync.js";
+import { ingestCheckedListings, getListingSyncStatus } from "./listing-ingest.js";
 
 const ALARM_NAME = "check-jobs";
 const OFFSCREEN_URL = "offscreen.html";
@@ -602,6 +605,9 @@ async function checkWatch(watch, { isFirstRun, previousIds, titleFilter }) {
   const newJobs = isFirstRun ? [] : jobs.filter((j) => !previousIds.has(j.id));
 
   return {
+    // WD-59: everything this check read off the page (after the title
+    // filter), new or not — what a connected browser sends to WatchDesk.
+    jobs,
     newJobs,
     // Replace (not union) the seen set with the current page's ids. The
     // job board's search-results page is a rotating window (newest
@@ -634,11 +640,12 @@ async function runAllChecks({ lateByMs = 0 } = {}) {
         const isFirstRun = !(watch.id in state.seenIds);
         const previousIds = new Set(state.seenIds[watch.id] || []);
         try {
-          const { newJobs, currentIds, result } = await checkWatch(watch, { isFirstRun, previousIds, titleFilter });
-          return { watch, newJobs, currentIds, result, error: null };
+          const { jobs, newJobs, currentIds, result } = await checkWatch(watch, { isFirstRun, previousIds, titleFilter });
+          return { watch, jobs, newJobs, currentIds, result, error: null };
         } catch (err) {
           return {
             watch,
+            jobs: null,
             newJobs: [],
             currentIds: null,
             result: {
@@ -773,6 +780,26 @@ async function runAllChecks({ lateByMs = 0 } = {}) {
     if (!notificationsMuted) {
       await playAlertSound(soundId); // one alert tone per check cycle, not per watch
     }
+  }
+
+  // WD-59: what each watch that was read this cycle had on its page. The
+  // callers hand it to sendCheckedListings() once everything above is done;
+  // a watch whose check failed read nothing and is left out.
+  return results.filter((r) => r.jobs).map((r) => ({ watchId: r.watch.id, jobs: r.jobs }));
+}
+
+// WD-59: sends a finished check cycle's listings to the connected WatchDesk
+// account (listing-ingest.js), then tells an open popup so its "last synced"
+// line is current. Always called after runAllChecks() has saved its state
+// and raised its notifications, badge and sound, so it cannot delay or fail
+// a check; it never throws. With no account connected it sends nothing.
+async function sendCheckedListings(checked) {
+  const outcome = await ingestCheckedListings(checked);
+  if (outcome.status !== "ok" && outcome.status !== "failed") return;
+  try {
+    await chrome.runtime.sendMessage({ type: "watch-sync-changed", watchSync: await getSyncStatus() });
+  } catch {
+    // No popup open.
   }
 }
 
@@ -1017,11 +1044,15 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   // check runs on the last-synced list. With no account connected it sends
   // nothing.
   await syncWatches().catch(() => {});
+  let checked = [];
   try {
-    await runAllChecks({ lateByMs });
+    checked = await runAllChecks({ lateByMs });
   } catch (err) {
     console.error("[job-alert] check failed", err);
   }
+  // WD-59: the check is over and saved; now send what it read to WatchDesk.
+  // Awaited, so the worker stays alive until the requests are done.
+  await sendCheckedListings(checked);
   await accountCheck;
 });
 
@@ -1071,13 +1102,22 @@ registerAccountConnection();
 // default watch, so that is what its first sync has to account for.
 configureWatchSync({ unsyncedFallback: () => [defaultWatch()] });
 
-// What the popup renders: settings, run state, version, and (WD-54) how the
-// watch list stands against the connected account.
+// How this browser stands against the connected account: the watch list
+// (WD-54) and, with it, when listings last reached WatchDesk (WD-59).
+// { mode: "local" } with no account connected.
+async function getSyncStatus() {
+  const watchSync = await getWatchSyncStatus();
+  if (watchSync.mode !== "account") return watchSync;
+  return { ...watchSync, listings: await getListingSyncStatus() };
+}
+
+// What the popup renders: settings, run state, version, and (WD-54, WD-59)
+// how the watch list and the listings stand against the connected account.
 async function getPopupState() {
   const settings = await getSettings();
   const runState = await getRunState();
   const version = await getVersionInfo();
-  const watchSync = await getWatchSyncStatus();
+  const watchSync = await getSyncStatus();
   return { settings, runState, version, watchSync };
 }
 
@@ -1095,8 +1135,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         await ensureAlarmScheduled();
         // WD-54: same as the alarm — check the account's current list.
         await syncWatches().catch(() => {});
-        await runAllChecks();
+        const checked = await runAllChecks();
         sendResponse(await getPopupState());
+        // WD-59: after the answer, so the popup is not kept on "Checking…"
+        // while the listings go to WatchDesk; it hears "watch-sync-changed"
+        // when they have.
+        await sendCheckedListings(checked);
         break;
       }
       case "sync-watches": {

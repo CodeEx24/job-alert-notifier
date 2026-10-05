@@ -29,7 +29,8 @@
 // Contracts (WatchDesk repo): POST /api/auth/device/start and
 // GET /api/auth/device/poll — docs/tickets/WD-41.md; GET
 // /api/devices/current — docs/tickets/WD-45.md; GET and POST /api/watches,
-// PATCH and DELETE /api/watches/[id] — docs/tickets/WD-52.md.
+// PATCH and DELETE /api/watches/[id] — docs/tickets/WD-52.md; POST
+// /api/listings/ingest — docs/tickets/WD-57.md.
 
 import { WATCHDESK_ORIGIN } from "./config.js";
 
@@ -361,4 +362,34 @@ export async function updateWatch(id, patch) {
 export async function deleteWatch(id) {
   const response = await authorizedRequest(`/api/watches/${encodeURIComponent(id)}`, { method: "DELETE" });
   return response.status === 200 ? { kind: "ok" } : watchFailure(response);
+}
+
+// ---------- listings (WD-59; contract in WD-57) ----------
+
+// The most listings WatchDesk takes in one request (its INGEST_MAX_LISTINGS).
+// One more and the whole request is refused.
+export const INGEST_MAX_LISTINGS = 200;
+
+// POST /api/listings/ingest: the postings one check found for one watch →
+//   { kind: "ok", received, inserted: [{ id, jobId }] } or a failure, the
+//   same kinds as a watch call. `watchId` is the watch's id on WatchDesk;
+//   404 ("not-found") is a watch the account no longer has. A 400
+//   ("invalid") refuses the whole batch and stores nothing.
+//
+// Unlike the watch calls this one retries (RETRY_POLICY): WatchDesk keeps
+// one row per posting however often it is sent, so a repeat is harmless, and
+// it runs after the job check has finished, so nothing waits on it.
+export async function ingestListings(watchId, listings) {
+  const response = await authorizedRequest("/api/listings/ingest", {
+    method: "POST",
+    body: { watchId, listings },
+    idempotent: true,
+  });
+  if (response.status !== 200) return watchFailure(response);
+  const inserted = Array.isArray(response.body?.inserted) ? response.body.inserted : [];
+  return {
+    kind: "ok",
+    received: typeof response.body?.received === "number" ? response.body.received : listings.length,
+    inserted: inserted.filter((row) => typeof row?.id === "string" && typeof row?.jobId === "string"),
+  };
 }

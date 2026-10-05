@@ -22,6 +22,10 @@ this file mirrors its must-follow rules.
   `watches` is the last-synced copy, and every change goes through
   `watch-sync.js` (API first, refused when unreachable). Never change what
   an unconnected browser does.
+- **Listings go to WatchDesk after the check, never in it** (WD-59):
+  `listing-ingest.js` runs once a cycle is saved and notified, cannot delay
+  or fail a check, sends nothing when not connected, names a watch only by
+  its WatchDesk id, and never logs the token or a listing.
 - **The WatchDesk origin lives only in `config.js`** (and `manifest.json`'s
   `host_permissions`).
 - **No regression in shipped behaviour:** Open All Tabs, the settings panel,
