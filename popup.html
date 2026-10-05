@@ -138,6 +138,18 @@
       </div>
     </section>
 
+    <!-- Start Watching / Pause Watching (WD-71). Filled in by
+         popup-watcher.js; hidden until the worker has said which it is. The
+         state line is a polite live region, like the account title; the
+         popup's one role="status" stays the sync line (WD-73). -->
+    <section id="watcher-control" class="watcher-control" hidden>
+      <div class="watcher-control-text">
+        <span id="watcher-status" class="watcher-status" aria-live="polite"></span>
+        <span id="watcher-detail" class="watcher-detail"></span>
+      </div>
+      <button id="watcher-toggle" type="button"></button>
+    </section>
+
     <section class="controls">
       <label for="interval">Check every</label>
       <select id="interval">

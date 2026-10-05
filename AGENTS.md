@@ -40,6 +40,15 @@ this file mirrors its must-follow rules.
   stored token or is empty; an answer with no rule never ends a cycle and is
   dropped, counted, after 3 attempts; a 403 is waited out like an outage and
   never counted.
+- **Paused means no check alarm, and this browser decides it** (WD-71):
+  `watcherState` in `chrome.storage.local` is the authority and
+  `scheduleAlarm()`, the only place the alarm is created, creates none while
+  paused. Pausing changes no watch and "Check now" still works. Connected,
+  `watcher-state.js` reports it to `settings.watcherState` after the click is
+  answered (GET then PUT of the whole object, one field changed, one
+  `captureConnection()`); a failure never blocks or undoes the change, shows
+  in the sync line and is sent again on the next sync. The state is never
+  read back from WatchDesk and no other setting is synced.
 - **The WatchDesk origin lives only in `config.js`** (and `manifest.json`'s
   `host_permissions`).
 - **No regression in shipped behaviour:** Open All Tabs, the settings panel,

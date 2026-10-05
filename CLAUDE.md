@@ -83,6 +83,19 @@ Reference documents in the WatchDesk repository:
   cycles, 3 attempts in all, then dropped and counted. A 403 is the account
   being refused, not the batch: it ends the cycle like an outage and never
   counts as an attempt.
+- **Paused means no check alarm, and this browser decides it** (WD-71).
+  `watcherState` in `chrome.storage.local` ("running" | "paused") is the
+  authority; `scheduleAlarm()` is the only place the alarm is created and it
+  creates none while paused, so install, update, browser start, a changed
+  interval, reset and import cannot restart checks behind a pause. Pausing
+  changes no watch (that is Pause All) and "Check now" still works. With an
+  account connected, `watcher-state.js` reports the state to
+  `settings.watcherState` after the alarm is dealt with and the popup
+  answered: GET then PUT of the whole settings object with only that field
+  changed, both on one `captureConnection()`. A failed report never blocks or
+  undoes a pause or a start; it is shown in the sync line and sent again on
+  the next sync. The state is never read back from WatchDesk, and no other
+  setting is synced here.
 - **The WatchDesk origin is named in one place:** `config.js`, plus the same
   origins in `manifest.json`'s `host_permissions`. `tests/config.test.js`
   enforces this.
@@ -100,13 +113,15 @@ Reference documents in the WatchDesk repository:
 | `manifest.json` | Permissions, hosts, content scripts, worker, popup |
 | `background.js` | Service worker: check cycle, feed, notifications, popup messages |
 | `config.js` | The WatchDesk origin (production / development) |
-| `watchdesk-api.js` | The only WatchDesk API client (`requestJson`, the authenticated `authorizedRequest` with retries (WD-44), one function per route, including the four watch routes (WD-54) and listing ingestion (WD-59)) |
-| `account-connection.js` | Device pairing, token storage, connected state (WD-42); `captureConnection()`, the handle that binds a request to one token (WD-110) |
+| `watchdesk-api.js` | The only WatchDesk API client (`requestJson`, the authenticated `authorizedRequest` with retries (WD-44), one function per route, including the four watch routes (WD-54), listing ingestion (WD-59) and reading / replacing the account's settings (WD-71)) |
+| `account-connection.js` | Device pairing, token storage, connected state (WD-42); `captureConnection()`, the handle that binds a request to one token (WD-110), and `isCurrentConnection()` (WD-71) |
 | `watch-sync.js` | The watch list of a connected browser: sync with the account, first-connection upload, add / rename / pause / remove through the API (WD-54) |
+| `watcher-state.js` | Whether the periodic check is running or paused, kept in this browser, and reporting it to the connected account's settings (WD-71) |
 | `popup.html` / `popup.css` / `popup.js` | The popup |
+| `popup-watcher.js` | The popup's Start Watching / Pause Watching control (WD-71) |
 | `popup-account.js` | The popup's account card (WD-42): the one status area, titled with the connected account's email, "Connecting…" until WatchDesk has named it, or "Not connected" (WD-73) |
 | `listing-ingest.js` | Posts each check cycle's listings to the connected account, after the cycle; records the last success for the popup (WD-59); queues what could not be sent and retries it on the next cycle (WD-60); queues a cycle before sending it, gives up on a batch WatchDesk will not take, and binds every request to the cycle's connection (WD-110) |
-| `popup-watch-sync.js` | The sync line inside the account card (WD-73): "Last synced Xm ago" (the later of the watch sync and the listing upload) and, as the live region, how many listings are waiting, offline, a refused account (403), dropped listings (WD-54, WD-59, WD-60); and the refused-change message above the watch list (WD-54) |
+| `popup-watch-sync.js` | The sync line inside the account card (WD-73): "Last synced Xm ago" (the later of the watch sync and the listing upload) and, as the live region, how many listings are waiting, offline, a refused account (403), dropped listings (WD-54, WD-59, WD-60), a watcher state WatchDesk has not been given yet (WD-71); and the refused-change message above the watch list (WD-54) |
 | `sites.js`, `content-*.js`, `offscreen.*`, `sounds.js` | Site adapters, tab readers, HTML parsing, alert tones |
 | `tests/` | Vitest unit tests with mocked `chrome.*` and `fetch` |
 

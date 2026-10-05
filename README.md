@@ -116,6 +116,26 @@ still waiting for a look. Use **Mark all read** to clear every New tag at
 once, or **Clear** to wipe the whole log (you'll get a confirmation first,
 since that can't be undone).
 
+### Pausing and starting again
+
+**Pause Watching**, above "Check every", stops the automatic checks until
+you press **Start Watching** — overnight, say, or while you are not looking
+for work. The line beside the button always says which it is: "Watching is
+running" or "Watching is paused". It stays paused when Chrome restarts and
+when the extension updates.
+
+Pausing changes none of your watches, so nothing has to be switched back on
+one by one afterwards, and **Check now** still runs a check whenever you
+want one. Starting again checks within a few seconds and then on your usual
+interval. (To stop only some watches, use Pause All or the per-platform
+buttons in Settings instead.)
+
+With a WatchDesk account connected, the account is told whether watching is
+running or paused. If WatchDesk can't be reached, the pause or start still
+happens at once; the status line in the account card says WatchDesk hasn't
+been told yet, and it is sent again the next time the popup opens, on "Check
+now", on the next check, or when Chrome starts.
+
 ### Settings
 
 Click the **⚙** icon in the header to open the Settings panel.

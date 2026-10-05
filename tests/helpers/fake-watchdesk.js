@@ -130,6 +130,41 @@ export function installFakeWatchDesk({ now = () => Date.now() } = {}) {
     return json(200, { watchId: watch.id, siteId: watch.siteId, received: inBatch.size, inserted });
   };
 
+  // The account's settings (WD-56's route, with WD-71's watcherState). PUT
+  // replaces them all: a setting left out is a 400, a key that is not a
+  // setting is dropped.
+  const SETTINGS_FIELDS = ["intervalMinutes", "soundId", "notificationsMuted", "titleFilter", "watcherState"];
+  const account = {
+    settings: {
+      intervalMinutes: 15,
+      soundId: "ping",
+      notificationsMuted: true,
+      titleFilter: { enabled: true, keywords: ["php"] },
+      watcherState: "running",
+    },
+    settingsUpdatedAt: new Date(now()).toISOString(),
+  };
+  let settingsRoute = () => undefined;
+  const answerSettings = (request) => {
+    const scripted = settingsRoute(request);
+    if (scripted) return scripted;
+    if (!request.headers.Authorization) return json(401, { error: "Sign in to continue." });
+    if (request.method === "GET") return json(200, { ...account.settings, updatedAt: account.settingsUpdatedAt });
+    if (request.method !== "PUT") return json(405, { error: "Method not allowed." });
+    const body = request.body && typeof request.body === "object" ? request.body : {};
+    const fieldErrors = {};
+    for (const field of SETTINGS_FIELDS) {
+      if (!(field in body)) fieldErrors[field] = ["Missing"];
+    }
+    if ("watcherState" in body && !["running", "paused"].includes(body.watcherState)) {
+      fieldErrors.watcherState = ["Watching must be running or paused"];
+    }
+    if (Object.keys(fieldErrors).length > 0) return json(400, { error: "Check the highlighted fields.", fieldErrors });
+    account.settings = Object.fromEntries(SETTINGS_FIELDS.map((field) => [field, body[field]]));
+    account.settingsUpdatedAt = new Date(now()).toISOString();
+    return json(200, { ...account.settings, updatedAt: account.settingsUpdatedAt });
+  };
+
   // A job site's own page. Unreachable unless a test says what it answers.
   let siteAnswer = () => {
     throw new TypeError("Failed to fetch");
@@ -159,6 +194,7 @@ export function installFakeWatchDesk({ now = () => Date.now() } = {}) {
     if (request.path === "/api/devices/current") return currentAnswer(request);
     if (request.path === "/api/watches" || request.path.startsWith("/api/watches/")) return answerWatches(request);
     if (request.path === "/api/listings/ingest") return answerIngest(request);
+    if (request.path === "/api/settings") return answerSettings(request);
     return json(404, { error: "Not found." });
   });
 
@@ -197,6 +233,17 @@ export function installFakeWatchDesk({ now = () => Date.now() } = {}) {
     // Scripts the ingest route, like setWatchRoute.
     setIngestRoute: (answer) => {
       ingestRoute = answer;
+    },
+    // The account's settings as WatchDesk holds them now, a way to play
+    // "someone changed them on the web", and the calls made to the route.
+    settings: () => structuredClone(account.settings),
+    setSettings: (patch) => {
+      account.settings = { ...account.settings, ...patch };
+    },
+    settingsCalls: (method) => requests.filter((r) => r.path === "/api/settings" && (!method || r.method === method)),
+    // Scripts the settings route, like setWatchRoute.
+    setSettingsRoute: (answer) => {
+      settingsRoute = answer;
     },
     // What a job site answers a fetch of its page: `answer(request)`.
     setSite: (answer) => {

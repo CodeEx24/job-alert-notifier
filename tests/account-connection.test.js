@@ -482,6 +482,25 @@ describe("the connected state", () => {
     expect(env.chrome.storage.local.dump()[mod.LISTING_SYNC_KEY]).toBeUndefined();
   });
 
+  it("drops which watcher state the account was given along with a refused token (WD-71)", async () => {
+    await env.chrome.storage.local.set({ [mod.WATCHER_SYNC_KEY]: { sent: "paused", failed: false } });
+    api.setCurrent(() => api.json(401, { error: "Sign in to continue." }));
+    await mod.refreshAccount();
+    expect(env.chrome.storage.local.dump()[mod.WATCHER_SYNC_KEY]).toBeUndefined();
+  });
+
+  it("isCurrentConnection is true only while the token is still the one the connection was captured with (WD-71)", async () => {
+    const connection = await mod.captureConnection();
+    expect(await mod.isCurrentConnection(connection)).toBe(true);
+
+    await env.chrome.storage.local.set({ [mod.TOKEN_KEY]: "wd_another.token" });
+    expect(await mod.isCurrentConnection(connection)).toBe(false);
+    expect(await mod.isCurrentConnection(await mod.captureConnection())).toBe(true);
+
+    await env.chrome.storage.local.remove(mod.TOKEN_KEY);
+    expect(await mod.isCurrentConnection(connection)).toBe(false);
+  });
+
   describe("the queue of unsent listings (WD-60)", () => {
     const queueOf = (owner) => ({ owner, items: [{ watchId: "w", listing: { id: "1" } }], dropped: 0, droppedSeen: false });
     const stored = () => env.chrome.storage.local.dump()[mod.LISTING_QUEUE_KEY];

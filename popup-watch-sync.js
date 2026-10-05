@@ -10,14 +10,17 @@
 //   the state              how many listings are waiting to be sent (WD-60),
 //                          and anything in the way: offline, listings that
 //                          could not be sent, an account WatchDesk is
-//                          refusing (403, WD-110), listings dropped, watches
-//                          that are only in this browser.
+//                          refusing (403, WD-110), listings dropped, a
+//                          watcher state (running / paused) WatchDesk has
+//                          not been given yet (WD-71), watches that are
+//                          only in this browser.
 // The time is kept apart from the state because it changes as the minutes
 // pass: the state is the live region and is announced when it changes, the
 // time is not announced on every tick.
 //
 // It only sees the status object the service worker sends (watch-sync.js's
-// getWatchSyncStatus plus listing-ingest.js's getListingSyncStatus), which
+// getWatchSyncStatus plus listing-ingest.js's getListingSyncStatus and
+// watcher-state.js's getWatcherSyncStatus, as `watcherUnsent`), which
 // the worker reads from chrome.storage every time. Everything it writes into
 // the page goes through textContent. With no account connected it is hidden.
 
@@ -92,6 +95,13 @@ export function describeWatchSync(status, now = Date.now()) {
     text += ` · WatchDesk was out of reach for too long: the ${
       dropped === 1 ? "oldest unsent listing was" : `${dropped} oldest unsent listings were`
     } dropped`;
+  }
+
+  // WD-71: pausing or starting has already happened in this browser; this
+  // is only WatchDesk not having been told yet.
+  if (status.watcherUnsent === "paused" || status.watcherUnsent === "running") {
+    if (tone !== "offline") tone = "warning";
+    text += ` · WatchDesk hasn't been told that watching is ${status.watcherUnsent} yet; it will be sent again`;
   }
 
   if (status.localOnly > 0) {

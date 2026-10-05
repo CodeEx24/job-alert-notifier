@@ -17,6 +17,8 @@ import {
   deleteWatch,
   ingestListings,
   INGEST_MAX_LISTINGS,
+  readSettings,
+  replaceSettings,
 } from "../watchdesk-api.js";
 import { WATCHDESK_ORIGIN } from "../config.js";
 
@@ -644,6 +646,99 @@ describe("ingestListings (WD-57's route)", () => {
     const result = JSON.stringify(await ingestListings(WATCH_ID, [LISTING]));
     expect(result).not.toContain(TOKEN);
     expect(result).not.toContain("Engineer");
+  });
+});
+
+describe("readSettings and replaceSettings (WD-56's route, WD-71)", () => {
+  const SETTINGS = {
+    intervalMinutes: 15,
+    soundId: "ping",
+    notificationsMuted: true,
+    titleFilter: { enabled: false, keywords: ["rust", "go"] },
+    watcherState: "running",
+  };
+  const ANSWER = { ...SETTINGS, updatedAt: "2026-10-05T09:00:00.000Z" };
+
+  it("readSettings GETs /api/settings with the token and drops updatedAt, so the answer can be sent back", async () => {
+    fetchMock.mockResolvedValue(json(200, ANSWER));
+    expect(await readSettings()).toEqual({ kind: "ok", settings: SETTINGS });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${WATCHDESK_ORIGIN}/api/settings`);
+    expect(init).toMatchObject({ method: "GET", credentials: "omit" });
+    expect(init.headers).toEqual({ Authorization: `Bearer ${TOKEN}` });
+    expect(init.body).toBeUndefined();
+  });
+
+  it("keeps a setting it does not know about, so a later PUT does not lose it", async () => {
+    fetchMock.mockResolvedValue(json(200, { ...ANSWER, somethingNew: 1 }));
+    expect((await readSettings()).settings).toEqual({ ...SETTINGS, somethingNew: 1 });
+  });
+
+  it("replaceSettings PUTs the whole object and reads the settings as they now are", async () => {
+    fetchMock.mockResolvedValue(json(200, { ...ANSWER, watcherState: "paused" }));
+    expect(await replaceSettings({ ...SETTINGS, watcherState: "paused" })).toEqual({
+      kind: "ok",
+      settings: { ...SETTINGS, watcherState: "paused" },
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${WATCHDESK_ORIGIN}/api/settings`);
+    expect(init.method).toBe("PUT");
+    expect(init.headers).toEqual({ "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}` });
+    expect(JSON.parse(init.body)).toEqual({ ...SETTINGS, watcherState: "paused" });
+  });
+
+  it.each([
+    ["readSettings", () => readSettings()],
+    ["replaceSettings", () => replaceSettings(SETTINGS)],
+  ])("%s is sent once: unreachable, a 5xx and a 429 are reported, not retried", async (_name, call) => {
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    expect(await call()).toEqual({ kind: "unreachable" });
+    fetchMock.mockResolvedValueOnce(json(503, {}));
+    expect(await call()).toEqual({ kind: "error", status: 503 });
+    fetchMock.mockResolvedValueOnce(json(429, {}, { "Retry-After": "7" }));
+    expect(await call()).toEqual({ kind: "rate-limited", retryAfterSeconds: 7 });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("a 404 is not-found, a 400 invalid, and a 200 that is not an object an error", async () => {
+    fetchMock.mockResolvedValueOnce(json(404, { error: "Settings not found." }));
+    expect(await readSettings()).toEqual({ kind: "not-found" });
+    fetchMock.mockResolvedValueOnce(json(400, { error: "Some fields need another look.", fieldErrors: {} }));
+    expect((await replaceSettings({})).kind).toBe("invalid");
+    for (const body of [null, ["a"], "text", 7]) {
+      fetchMock.mockResolvedValueOnce(json(200, body));
+      expect(await readSettings()).toEqual({ kind: "error", status: 200 });
+    }
+  });
+
+  it("a 401 goes to the shared handler; with no token nothing is sent", async () => {
+    fetchMock.mockResolvedValue(json(401, { error: "Sign in to continue." }));
+    expect(await replaceSettings(SETTINGS)).toEqual({ kind: "unauthorized" });
+    expect(onUnauthorized).toHaveBeenCalledWith(TOKEN);
+
+    fetchMock.mockClear();
+    expect(await readSettings()).toEqual({ kind: "unauthorized" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("gives up after 10 seconds", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementation(
+      (_url, { signal }) =>
+        new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")))),
+    );
+    const reading = readSettings();
+    await vi.advanceTimersByTimeAsync(9999);
+    expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await reading).toEqual({ kind: "unreachable" });
+  });
+
+  it("never puts the token or a setting in a failure", async () => {
+    fetchMock.mockResolvedValue(json(500, { error: `boom ${TOKEN} rust` }));
+    const text = JSON.stringify([await readSettings(), await replaceSettings(SETTINGS)]);
+    expect(text).not.toContain(TOKEN);
+    expect(text).not.toContain("rust");
   });
 });
 

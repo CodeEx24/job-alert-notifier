@@ -22,6 +22,8 @@
 //   chrome.storage.local -> { seenIds: {watchId: [ids]}, lastChecked: {},
 //                              lastResult: {}, badgeCount, feed: [...] }
 //     (larger / more frequently written run-state, kept local only)
+//     Also `watcherState` (WD-71): "paused" while the user has paused
+//     watching, and then there is no check alarm — see watcher-state.js.
 
 import { SITES, siteForUrl, pickWatchTabFromCandidates } from "./sites.js";
 import {
@@ -45,6 +47,14 @@ import {
   forgetKnownWatches,
 } from "./watch-sync.js";
 import { ingestCheckedListings, getListingSyncStatus, acknowledgeDroppedListings } from "./listing-ingest.js";
+import {
+  getWatcherState,
+  isWatcherState,
+  isWatchingPaused,
+  saveWatcherState,
+  reflectWatcherState,
+  getWatcherSyncStatus,
+} from "./watcher-state.js";
 
 const ALARM_NAME = "check-jobs";
 const OFFSCREEN_URL = "offscreen.html";
@@ -829,6 +839,8 @@ async function resetExtension() {
   });
   await saveRunState({ seenIds: {}, lastChecked: {}, lastResult: {}, badgeCount: 0, feed: [], consecutiveErrors: {}, lastRunAt: null, lastGap: null });
   await updateBadge(0);
+  // WD-71: running is the default, like everything else a reset puts back.
+  await saveWatcherState("running");
   await scheduleAlarm();
 }
 
@@ -969,6 +981,11 @@ async function clearBadge() {
 async function scheduleAlarm() {
   const { intervalMinutes } = await getSettings();
   await chrome.alarms.clear(ALARM_NAME);
+  // WD-71: while the user has paused watching there is no alarm. Every
+  // path that creates it comes through here (install, update, browser
+  // start, a changed interval, reset, import, the self-heal below), so
+  // none of them can start the checks again behind a pause.
+  if (await isWatchingPaused()) return;
   // IMPORTANT: this must be awaited. chrome.alarms.create() is itself
   // async (it round-trips to the browser process to persist the alarm).
   // A service worker is allowed to be torn down the instant it has no
@@ -995,9 +1012,45 @@ async function scheduleAlarm() {
 // silently sitting there until the browser itself restarts.
 async function ensureAlarmScheduled() {
   const existing = await chrome.alarms.get(ALARM_NAME);
+  // WD-71: paused, a missing alarm is how it should be — and one that is
+  // still there (a worker stopped between saving the pause and clearing the
+  // alarm) is cleared rather than left to fire.
+  if (await isWatchingPaused()) {
+    if (existing) await chrome.alarms.clear(ALARM_NAME);
+    return;
+  }
   if (!existing) {
     console.warn("[job-alert] periodic alarm was missing — re-arming it");
     await scheduleAlarm();
+  }
+}
+
+// WD-71: Pause Watching / Start Watching. The state is saved first, so a
+// worker stopped right after still knows it; scheduleAlarm() then clears
+// the alarm and, unless paused, creates it again on the user's interval
+// (first check a few seconds later, as after any other re-arm). Asking for
+// the state it is already in changes nothing, so a second click does not
+// restart the countdown.
+async function setWatcherState(state) {
+  if ((await getWatcherState()) === state) {
+    await ensureAlarmScheduled();
+    return;
+  }
+  await saveWatcherState(state);
+  await scheduleAlarm();
+}
+
+// WD-71: tells the connected WatchDesk account whether watching is running
+// or paused (watcher-state.js), then tells an open popup if its sync line
+// has something new to say. Always called after the alarm has been dealt
+// with and the popup answered, so it cannot delay or undo a pause or a
+// start; it never throws. With no account connected it sends nothing.
+async function sendWatcherState() {
+  try {
+    if (!(await reflectWatcherState())) return;
+    await chrome.runtime.sendMessage({ type: "watch-sync-changed", watchSync: await getSyncStatus() });
+  } catch {
+    // No popup open.
   }
 }
 
@@ -1024,6 +1077,12 @@ async function ensureAlarmScheduled() {
 // saving.
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== ALARM_NAME) return;
+  // WD-71: a tick that was already on its way when the user paused checks
+  // nothing, and takes the alarm with it.
+  if (await isWatchingPaused()) {
+    await chrome.alarms.clear(ALARM_NAME);
+    return;
+  }
   // alarm.scheduledTime is Chrome's own record of when this alarm was
   // meant to fire — comparing it to right now is a much more honest way
   // to detect "this ran late" than trying to track our own expected
@@ -1053,6 +1112,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   // WD-59: the check is over and saved; now send what it read to WatchDesk.
   // Awaited, so the worker stays alive until the requests are done.
   await sendCheckedListings(checked);
+  // WD-71: and, if WatchDesk has not got it yet, whether watching is
+  // running or paused.
+  await sendWatcherState();
   await accountCheck;
 });
 
@@ -1091,6 +1153,9 @@ chrome.runtime.onStartup.addListener(async () => {
   } catch (err) {
     console.error("[job-alert] schedule failed", err);
   }
+  // WD-71: a paused browser has no alarm tick to do this on, so a state
+  // WatchDesk has not got yet is sent again here.
+  await sendWatcherState();
 });
 
 // WatchDesk account connection (WD-42): its own tab and alarm listeners,
@@ -1103,22 +1168,25 @@ registerAccountConnection();
 configureWatchSync({ unsyncedFallback: () => [defaultWatch()] });
 
 // How this browser stands against the connected account: the watch list
-// (WD-54) and, with it, when listings last reached WatchDesk (WD-59).
+// (WD-54), with it when listings last reached WatchDesk (WD-59), and the
+// watcher state WatchDesk could not be given, if any (WD-71).
 // { mode: "local" } with no account connected.
 async function getSyncStatus() {
   const watchSync = await getWatchSyncStatus();
   if (watchSync.mode !== "account") return watchSync;
-  return { ...watchSync, listings: await getListingSyncStatus() };
+  return { ...watchSync, listings: await getListingSyncStatus(), watcherUnsent: await getWatcherSyncStatus() };
 }
 
-// What the popup renders: settings, run state, version, and (WD-54, WD-59)
-// how the watch list and the listings stand against the connected account.
+// What the popup renders: settings, run state, version, whether watching
+// is running or paused (WD-71), and (WD-54, WD-59) how the watch list and
+// the listings stand against the connected account.
 async function getPopupState() {
   const settings = await getSettings();
   const runState = await getRunState();
   const version = await getVersionInfo();
+  const watcher = { state: await getWatcherState() };
   const watchSync = await getSyncStatus();
-  return { settings, runState, version, watchSync };
+  return { settings, runState, version, watcher, watchSync };
 }
 
 // ---------- messages from popup.js ----------
@@ -1141,6 +1209,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         // while the listings go to WatchDesk; it hears "watch-sync-changed"
         // when they have.
         await sendCheckedListings(checked);
+        await sendWatcherState();
         break;
       }
       case "sync-watches": {
@@ -1148,6 +1217,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         // state. Answers { mode: "local" } and sends nothing when no
         // account is connected.
         sendResponse(await syncWatches());
+        // WD-71: after the answer, a watcher state WatchDesk has not got
+        // yet is sent again.
+        await sendWatcherState();
+        break;
+      }
+      case "set-watcher-state": {
+        // WD-71: Pause Watching / Start Watching. The alarm is dealt with
+        // and the popup answered before WatchDesk is told, so an
+        // unreachable WatchDesk never holds the click up.
+        if (!isWatcherState(message.state)) {
+          sendResponse({ ok: false, error: "Unknown watcher state" });
+          break;
+        }
+        await setWatcherState(message.state);
+        sendResponse(await getPopupState());
+        await sendWatcherState();
         break;
       }
       case "listing-drops-seen": {
@@ -1359,6 +1444,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case "reset-extension": {
         await resetExtension();
         sendResponse({ ok: true });
+        // WD-71: a reset starts watching again; WatchDesk is told.
+        await sendWatcherState();
         break;
       }
       case "import-settings": {

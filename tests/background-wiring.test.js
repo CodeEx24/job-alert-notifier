@@ -4,7 +4,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installChromeMock } from "./helpers/chrome-mock.js";
 import { installFakeWatchDesk, TEST_CODE, TEST_POLL_SECRET, TEST_TOKEN } from "./helpers/fake-watchdesk.js";
-import { LISTING_QUEUE_KEY, LISTING_SYNC_KEY, PAIRING_ALARM, TOKEN_KEY, WATCH_SYNC_KEY } from "../account-connection.js";
+import {
+  LISTING_QUEUE_KEY,
+  LISTING_SYNC_KEY,
+  PAIRING_ALARM,
+  TOKEN_KEY,
+  WATCH_SYNC_KEY,
+  WATCHER_SYNC_KEY,
+} from "../account-connection.js";
 
 let env;
 let api;
@@ -350,6 +357,7 @@ describe("the watch list with an account connected (WD-54)", () => {
         lastSyncedAt: Date.now() - 240000,
         localOnly: 0,
         listings: { lastIngestedAt: null, failed: false, queued: 0, dropped: 0 },
+        watcherUnsent: null,
       });
     });
 
@@ -611,6 +619,7 @@ describe("a check cycle posts what it read to WatchDesk (WD-59)", () => {
         lastSyncedAt: Date.now(),
         localOnly: 0,
         listings: { lastIngestedAt: Date.now(), failed: false, queued: 0, dropped: 0 },
+        watcherUnsent: null,
       });
       expect(JSON.stringify(state)).not.toContain(TEST_TOKEN);
     });
@@ -627,6 +636,7 @@ describe("a check cycle posts what it read to WatchDesk (WD-59)", () => {
             lastSyncedAt: Date.now(),
             localOnly: 0,
             listings: { lastIngestedAt: Date.now(), failed: false, queued: 0, dropped: 0 },
+            watcherUnsent: null,
           },
         },
       ]);
@@ -768,5 +778,343 @@ describe("a check cycle posts what it read to WatchDesk (WD-59)", () => {
 
     expect(local()[TOKEN_KEY]).toBe(TEST_TOKEN);
     expect(local()[LISTING_SYNC_KEY]).toBeUndefined();
+  });
+});
+
+describe("Start Watching / Pause Watching (WD-71)", () => {
+  const ALARM = "check-jobs";
+  const hasAlarm = () => env.alarms.has(ALARM);
+  const local = () => env.chrome.storage.local.dump();
+  const pause = () => sendMessage({ type: "set-watcher-state", state: "paused" });
+  const start = () => sendMessage({ type: "set-watcher-state", state: "running" });
+  const jobSiteFetches = () => api.requests.filter((r) => r.origin === OJ_ORIGIN);
+  // A new service worker: the same storage and alarms, its own listeners.
+  const restartWorker = async () => {
+    env.dropListeners();
+    vi.resetModules();
+    await import("../background.js");
+  };
+
+  describe("with no account connected", () => {
+    it("is running to begin with, with the alarm on the user's interval", async () => {
+      const state = await sendMessage({ type: "get-state" });
+
+      expect(state.watcher).toEqual({ state: "running" });
+      expect(env.alarms.get(ALARM)).toMatchObject({ periodInMinutes: 5 });
+    });
+
+    it("Pause clears the alarm at once, saves the state in this browser, and sends nothing", async () => {
+      await sendMessage({ type: "get-state" });
+      expect(hasAlarm()).toBe(true);
+
+      const state = await pause();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(hasAlarm()).toBe(false);
+      expect(state.watcher).toEqual({ state: "paused" });
+      expect(state.watchSync).toEqual({ mode: "local" });
+      expect(local().watcherState).toBe("paused");
+      expect(env.chrome.storage.sync.dump().watcherState).toBeUndefined();
+      expect(local()[WATCHER_SYNC_KEY]).toBeUndefined();
+      expect(api.fetch).not.toHaveBeenCalled();
+    });
+
+    it("changes no watch: it is not Pause All", async () => {
+      await sendMessage({ type: "add-watch", url: UPWORK_URL, label: "Mine" });
+      const before = storedWatches();
+
+      const state = await pause();
+
+      expect(storedWatches()).toEqual(before);
+      expect(state.settings.watches.every((w) => w.enabled)).toBe(true);
+    });
+
+    it("stays paused through everything that used to re-arm the alarm", async () => {
+      await pause();
+      env.chrome.alarms.create.mockClear();
+
+      await sendMessage({ type: "get-state" });
+      await sendMessage({ type: "set-interval", minutes: 15 });
+      await env.chrome.runtime.onInstalled.dispatch({ reason: "update", previousVersion: "1.0.0" });
+      await env.chrome.runtime.onStartup.dispatch();
+      await sendMessage({ type: "import-settings", data: { watches: [{ url: UPWORK_URL, label: "Imported" }] } });
+
+      expect(hasAlarm()).toBe(false);
+      expect(env.chrome.alarms.create).not.toHaveBeenCalledWith(ALARM, expect.anything());
+      expect((await sendMessage({ type: "get-state" })).watcher).toEqual({ state: "paused" });
+    });
+
+    it("stays paused in a new service worker and after a browser restart", async () => {
+      await pause();
+
+      await restartWorker();
+      await env.chrome.runtime.onStartup.dispatch();
+
+      expect(hasAlarm()).toBe(false);
+      expect((await sendMessage({ type: "get-state" })).watcher).toEqual({ state: "paused" });
+      expect(hasAlarm()).toBe(false);
+    });
+
+    it("Check now still checks while paused, and does not bring the alarm back", async () => {
+      await pause();
+
+      const state = await sendMessage({ type: "check-now" });
+
+      expect(jobSiteFetches()).toHaveLength(1);
+      expect(state.runState.lastRunAt).toBe(Date.now());
+      expect(state.watcher).toEqual({ state: "paused" });
+      expect(hasAlarm()).toBe(false);
+    });
+
+    it("a tick that was already on its way when the user paused checks nothing", async () => {
+      await pause();
+      // Chrome had the alarm's event queued before it was cleared.
+      env.alarms.set(ALARM, { name: ALARM, periodInMinutes: 5 });
+
+      await checkJobsAlarm();
+
+      expect(api.fetch).not.toHaveBeenCalled();
+      expect(local().lastRunAt).toBeUndefined();
+      expect(hasAlarm()).toBe(false);
+    });
+
+    it("an alarm left behind by a worker stopped mid-pause is cleared when the popup next opens", async () => {
+      await env.chrome.storage.local.set({ watcherState: "paused" });
+      await env.chrome.alarms.create(ALARM, { periodInMinutes: 5 });
+
+      await sendMessage({ type: "get-state" });
+
+      expect(hasAlarm()).toBe(false);
+    });
+
+    it("Start creates the alarm again on the user's interval, and the checks resume", async () => {
+      await sendMessage({ type: "set-interval", minutes: 15 });
+      await pause();
+
+      const state = await start();
+
+      expect(state.watcher).toEqual({ state: "running" });
+      expect(local().watcherState).toBe("running");
+      expect(env.alarms.get(ALARM)).toEqual({ name: ALARM, delayInMinutes: 0.1, periodInMinutes: 15 });
+
+      await checkJobsAlarm();
+      expect(jobSiteFetches()).toHaveLength(1);
+      expect(local().lastRunAt).toBe(Date.now());
+    });
+
+    it("an interval chosen while paused is the one Start uses", async () => {
+      await pause();
+      await sendMessage({ type: "set-interval", minutes: 30 });
+
+      await start();
+
+      expect(env.alarms.get(ALARM)).toMatchObject({ periodInMinutes: 30 });
+    });
+
+    it("asking for the state it is already in does not restart the countdown", async () => {
+      await sendMessage({ type: "get-state" });
+      env.chrome.alarms.create.mockClear();
+      env.chrome.alarms.clear.mockClear();
+
+      expect((await start()).watcher).toEqual({ state: "running" });
+
+      expect(env.chrome.alarms.create).not.toHaveBeenCalled();
+      expect(env.chrome.alarms.clear).not.toHaveBeenCalled();
+      expect(hasAlarm()).toBe(true);
+    });
+
+    it("refuses anything that is not running or paused, and changes nothing", async () => {
+      await sendMessage({ type: "get-state" });
+      const refused = { ok: false, error: "Unknown watcher state" };
+
+      expect(await sendMessage({ type: "set-watcher-state", state: "stopped" })).toEqual(refused);
+      expect(await sendMessage({ type: "set-watcher-state" })).toEqual(refused);
+
+      expect(local().watcherState).toBeUndefined();
+      expect(hasAlarm()).toBe(true);
+    });
+
+    it("Reset Extension starts watching again", async () => {
+      await pause();
+
+      expect(await sendMessage({ type: "reset-extension" })).toEqual({ ok: true });
+
+      expect(local().watcherState).toBe("running");
+      expect(hasAlarm()).toBe(true);
+    });
+
+    it("sends nothing to WatchDesk, whatever is clicked", async () => {
+      await pause();
+      await sendMessage({ type: "sync-watches" });
+      await sendMessage({ type: "check-now" });
+      await start();
+      await checkJobsAlarm();
+      await env.chrome.runtime.onStartup.dispatch();
+      await sendMessage({ type: "reset-extension" });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(api.requests.every((r) => r.origin === OJ_ORIGIN)).toBe(true);
+      expect(local()[WATCHER_SYNC_KEY]).toBeUndefined();
+    });
+  });
+
+  describe("with an account connected", () => {
+    let popupMessages; // what an open popup would receive from the worker
+    const flush = () => vi.advanceTimersByTimeAsync(0);
+    const settingsMethods = () => api.settingsCalls().map((r) => r.method);
+
+    beforeEach(async () => {
+      await env.chrome.storage.local.set({ [TOKEN_KEY]: TEST_TOKEN });
+      popupMessages = [];
+      env.chrome.runtime.sendMessage.mockImplementation(async (message) => {
+        popupMessages.push(message);
+      });
+    });
+
+    it("Pause is reflected in the account's settings.watcherState, and Start sets it back", async () => {
+      const before = api.settings();
+
+      await pause();
+      await flush();
+
+      expect(hasAlarm()).toBe(false);
+      expect(settingsMethods()).toEqual(["GET", "PUT"]);
+      expect(api.settingsCalls().every((r) => r.headers.Authorization === `Bearer ${TEST_TOKEN}`)).toBe(true);
+      // Only the watcher state changed.
+      expect(api.settings()).toEqual({ ...before, watcherState: "paused" });
+
+      await start();
+      await flush();
+
+      expect(hasAlarm()).toBe(true);
+      expect(api.settings()).toEqual(before);
+      // Nothing went wrong, so the sync line has nothing new to say.
+      expect(popupMessages).toEqual([]);
+    });
+
+    it("the click is answered before WatchDesk is: one that never answers cannot hold up a pause", async () => {
+      await sendMessage({ type: "get-state" });
+      api.setSettingsRoute(api.hang);
+
+      const state = await pause();
+
+      // Answered and already paused, with the request still out.
+      expect(state.watcher).toEqual({ state: "paused" });
+      expect(state.watchSync.watcherUnsent).toBeNull();
+      expect(hasAlarm()).toBe(false);
+      expect(popupMessages).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(10000);
+
+      expect(settingsMethods()).toEqual(["GET"]);
+      expect(popupMessages).toHaveLength(1);
+      expect(popupMessages[0]).toMatchObject({
+        type: "watch-sync-changed",
+        watchSync: { mode: "account", watcherUnsent: "paused" },
+      });
+      expect(JSON.stringify(popupMessages)).not.toContain(TEST_TOKEN);
+      // Still paused: the failure undoes nothing.
+      expect(local().watcherState).toBe("paused");
+      expect(hasAlarm()).toBe(false);
+    });
+
+    it("a pause WatchDesk did not get is sent again when the popup next opens, and the warning goes", async () => {
+      api.setSettingsRoute(api.networkError);
+      await pause();
+      await flush();
+      expect((await sendMessage({ type: "get-state" })).watchSync.watcherUnsent).toBe("paused");
+      expect(api.settings().watcherState).toBe("running");
+
+      api.setSettingsRoute(() => undefined);
+      popupMessages.length = 0;
+      await sendMessage({ type: "sync-watches" });
+      await flush();
+
+      expect(api.settings().watcherState).toBe("paused");
+      expect(popupMessages.at(-1)).toMatchObject({ type: "watch-sync-changed", watchSync: { watcherUnsent: null } });
+      expect(hasAlarm()).toBe(false);
+    });
+
+    it("…and at a browser start, since a paused browser has no alarm tick to send it on", async () => {
+      api.setSettingsRoute(api.networkError);
+      await pause();
+      await flush();
+      api.setSettingsRoute(() => undefined);
+
+      await restartWorker();
+      await env.chrome.runtime.onStartup.dispatch();
+
+      expect(api.settings().watcherState).toBe("paused");
+      expect(hasAlarm()).toBe(false);
+    });
+
+    it("…and by Check now", async () => {
+      api.setSettingsRoute(api.networkError);
+      await pause();
+      await flush();
+      api.setSettingsRoute(() => undefined);
+
+      await sendMessage({ type: "check-now" });
+      await flush();
+
+      expect(api.settings().watcherState).toBe("paused");
+    });
+
+    it("a start WatchDesk did not get is sent again on the next alarm tick, after the check", async () => {
+      await pause();
+      await flush();
+      api.setSettingsRoute(api.networkError);
+      await start();
+      await flush();
+      expect(api.settings().watcherState).toBe("paused");
+      expect(hasAlarm()).toBe(true);
+
+      let lastRunAtRequest;
+      api.setSettingsRoute(() => {
+        lastRunAtRequest = local().lastRunAt;
+        return undefined;
+      });
+      vi.setSystemTime(Date.now() + 300000);
+      await checkJobsAlarm();
+
+      expect(api.settings().watcherState).toBe("running");
+      expect(lastRunAtRequest).toBe(Date.now());
+    });
+
+    it("Reset Extension starts watching again and tells WatchDesk", async () => {
+      await pause();
+      await flush();
+
+      await sendMessage({ type: "reset-extension" });
+      await flush();
+
+      expect(hasAlarm()).toBe(true);
+      expect(api.settings().watcherState).toBe("running");
+    });
+
+    it("never shows the popup the token", async () => {
+      const paused = await pause();
+      await flush();
+
+      expect(JSON.stringify(paused)).not.toContain(TEST_TOKEN);
+      expect(JSON.stringify(await sendMessage({ type: "get-state" }))).not.toContain(TEST_TOKEN);
+    });
+  });
+
+  it("a new connection is told the state afresh: the last one's record goes", async () => {
+    await pause();
+    await env.chrome.storage.local.set({ [WATCHER_SYNC_KEY]: { sent: "paused", failed: false } });
+    await sendMessage({ type: "account-connect" });
+    api.queuePoll(api.approved);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(local()[TOKEN_KEY]).toBe(TEST_TOKEN);
+    expect(local()[WATCHER_SYNC_KEY]).toBeUndefined();
+
+    await sendMessage({ type: "sync-watches" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(api.settings().watcherState).toBe("paused");
+    expect(local()[WATCHER_SYNC_KEY]).toEqual({ sent: "paused", failed: false });
+    expect(local().watcherState).toBe("paused");
   });
 });
