@@ -56,6 +56,35 @@ describe("with no account connected", () => {
   });
 });
 
+describe("getServerWatchIds (WD-59)", () => {
+  it("is empty with no account connected, and before the first sync", async () => {
+    await storeWatches([local("w_1", OJ)]);
+    expect(await sync.getServerWatchIds()).toEqual([]);
+    await connect();
+    expect(await sync.getServerWatchIds()).toEqual([]);
+    expect(api.fetch).not.toHaveBeenCalled();
+  });
+
+  it("lists the ids WatchDesk gave, and never a watch that is only in this browser", async () => {
+    await connect();
+    const onWeb = api.addWatch({ url: LI });
+    await storeWatches([local("w_1", OJ), local("w_bad", "https://example.com/jobs")]);
+    await sync.syncWatches();
+
+    const uploaded = api.watches.find((w) => w.url === OJ);
+    expect(await sync.getServerWatchIds()).toEqual([onWeb.id, uploaded.id]);
+    expect(storedWatches().map((w) => w.id)).toContain("w_bad");
+  });
+
+  it("is empty again once the token is gone", async () => {
+    await connect();
+    api.addWatch({ url: LI });
+    await sync.syncWatches();
+    await env.chrome.storage.local.remove(TOKEN_KEY);
+    expect(await sync.getServerWatchIds()).toEqual([]);
+  });
+});
+
 describe("a sync", () => {
   beforeEach(connect);
 

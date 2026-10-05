@@ -167,6 +167,15 @@ export async function getWatchSyncStatus() {
   return { mode: "account", offline: state.offline, lastSyncedAt: state.lastSyncedAt, localOnly };
 }
 
+// The ids WatchDesk knows this browser's watches by: all listing-ingest.js
+// may name a watch with (WD-59). A watch still waiting to be uploaded, or
+// refused by WatchDesk, has only a local id and is not in here. Empty when
+// not connected.
+export async function getServerWatchIds() {
+  if (!(await isConnected())) return [];
+  return (await readState()).serverIds;
+}
+
 // ---------- sync ----------
 
 async function runSync() {

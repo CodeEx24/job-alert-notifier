@@ -475,6 +475,13 @@ describe("the connected state", () => {
     expect(env.chrome.storage.local.dump()[mod.WATCH_SYNC_KEY]).toBeUndefined();
   });
 
+  it("drops the record of when listings were last sent along with a refused token (WD-59)", async () => {
+    await env.chrome.storage.local.set({ [mod.LISTING_SYNC_KEY]: { lastIngestedAt: 1, failed: false } });
+    api.setCurrent(() => api.json(401, { error: "Sign in to continue." }));
+    await mod.refreshAccount();
+    expect(env.chrome.storage.local.dump()[mod.LISTING_SYNC_KEY]).toBeUndefined();
+  });
+
   it("does not start a pairing while connected", async () => {
     const state = await mod.startConnecting();
     expect(state.status).toBe("connected");

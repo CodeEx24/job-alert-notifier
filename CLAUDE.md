@@ -26,8 +26,8 @@ Reference documents in the WatchDesk repository:
   behaviours that must not regress, and §9 lists where the code and the
   documents disagree.
 - `docs/adr/0002-extension-auth.md`: the device-pairing design.
-- `docs/tickets/WD-41.md`, `WD-43.md`, `WD-45.md`, `WD-52.md`: the API
-  contracts the extension calls.
+- `docs/tickets/WD-41.md`, `WD-43.md`, `WD-45.md`, `WD-52.md`, `WD-57.md`:
+  the API contracts the extension calls.
 
 ## Non-negotiables
 
@@ -54,6 +54,13 @@ Reference documents in the WatchDesk repository:
   through `watch-sync.js`, which calls the API first and refuses the change
   when WatchDesk is unreachable. Never write `watches` directly in connected
   mode, and never change what an unconnected browser does.
+- **Listings go to WatchDesk after the check, never in it** (WD-59).
+  `listing-ingest.js` posts what a cycle read once `runAllChecks()` has
+  saved its state and raised its notifications, badge and sound; it can
+  never delay, block or fail a check, and it sends nothing with no account
+  connected. A watch is named only by its WatchDesk id (never a local id),
+  at most 200 listings a request, and neither the token nor a listing is
+  ever logged.
 - **The WatchDesk origin is named in one place:** `config.js`, plus the same
   origins in `manifest.json`'s `host_permissions`. `tests/config.test.js`
   enforces this.
@@ -71,12 +78,13 @@ Reference documents in the WatchDesk repository:
 | `manifest.json` | Permissions, hosts, content scripts, worker, popup |
 | `background.js` | Service worker: check cycle, feed, notifications, popup messages |
 | `config.js` | The WatchDesk origin (production / development) |
-| `watchdesk-api.js` | The only WatchDesk API client (`requestJson`, the authenticated `authorizedRequest` with retries (WD-44), one function per route, including the four watch routes (WD-54)) |
+| `watchdesk-api.js` | The only WatchDesk API client (`requestJson`, the authenticated `authorizedRequest` with retries (WD-44), one function per route, including the four watch routes (WD-54) and listing ingestion (WD-59)) |
 | `account-connection.js` | Device pairing, token storage, connected state (WD-42) |
 | `watch-sync.js` | The watch list of a connected browser: sync with the account, first-connection upload, add / rename / pause / remove through the API (WD-54) |
 | `popup.html` / `popup.css` / `popup.js` | The popup |
 | `popup-account.js` | The popup's account card (WD-42) |
-| `popup-watch-sync.js` | The popup's synced / offline line and refused-change message (WD-54) |
+| `listing-ingest.js` | Posts each check cycle's listings to the connected account, after the cycle; records the last success for the popup (WD-59) |
+| `popup-watch-sync.js` | The popup's synced / offline line and refused-change message (WD-54), which is also its "last synced" indicator for listings (WD-59) |
 | `sites.js`, `content-*.js`, `offscreen.*`, `sounds.js` | Site adapters, tab readers, HTML parsing, alert tones |
 | `tests/` | Vitest unit tests with mocked `chrome.*` and `fetch` |
 

@@ -67,6 +67,64 @@ describe("describeWatchSync", () => {
   });
 });
 
+describe("describeWatchSync: when listings last reached WatchDesk (WD-59)", () => {
+  const synced = (listings) => ({ mode: "account", offline: false, lastSyncedAt: minutesAgo(2), localOnly: 0, listings });
+
+  it("adds nothing before any check has sent listings, or when the state has none", () => {
+    const plain = { tone: "ok", text: "Watches synced with WatchDesk · 2m ago" };
+    expect(describeWatchSync(synced({ lastIngestedAt: null, failed: false }), NOW)).toEqual(plain);
+    expect(describeWatchSync(synced(undefined), NOW)).toEqual(plain);
+  });
+
+  it.each([
+    [0, "just now"],
+    [7, "7m ago"],
+    [60 * 3, "3h ago"],
+  ])("a successful send %i minutes ago reads 'Listings last synced %s'", (minutes, ago) => {
+    expect(describeWatchSync(synced({ lastIngestedAt: minutesAgo(minutes), failed: false }), NOW)).toEqual({
+      tone: "ok",
+      text: `Watches synced with WatchDesk · 2m ago · Listings last synced ${ago}`,
+    });
+  });
+
+  it("a send that did not get through is a warning, and keeps the time of the last one that did", () => {
+    expect(describeWatchSync(synced({ lastIngestedAt: minutesAgo(65), failed: true }), NOW)).toEqual({
+      tone: "warning",
+      text: "Watches synced with WatchDesk · 2m ago · Listings couldn't be sent to WatchDesk last time (last synced 1h ago)",
+    });
+    expect(describeWatchSync(synced({ lastIngestedAt: null, failed: true }), NOW)).toEqual({
+      tone: "warning",
+      text: "Watches synced with WatchDesk · 2m ago · Listings couldn't be sent to WatchDesk last time",
+    });
+  });
+
+  it("offline keeps its own wording and adds when listings last got through", () => {
+    const offline = { mode: "account", offline: true, lastSyncedAt: minutesAgo(12), localOnly: 0 };
+    expect(describeWatchSync({ ...offline, listings: { lastIngestedAt: minutesAgo(12), failed: true } }, NOW)).toEqual({
+      tone: "offline",
+      text: "Offline — couldn't reach WatchDesk. Showing your watches as last synced 12m ago. They can't be changed until it's back. Listings last synced 12m ago.",
+    });
+    expect(describeWatchSync({ ...offline, listings: { lastIngestedAt: null, failed: true } }, NOW).text).toBe(
+      "Offline — couldn't reach WatchDesk. Showing your watches as last synced 12m ago. They can't be changed until it's back.",
+    );
+  });
+
+  it("says nothing about listings while the first watch sync is still to come", () => {
+    const status = { mode: "account", offline: false, lastSyncedAt: null, localOnly: 0, listings: { lastIngestedAt: null, failed: false } };
+    expect(describeWatchSync(status, NOW)).toEqual({ tone: "neutral", text: "Syncing your watches with WatchDesk…" });
+  });
+
+  it("comes before the count of watches that are only in this browser", () => {
+    expect(describeWatchSync({ ...synced({ lastIngestedAt: NOW, failed: false }), localOnly: 1 }, NOW).text).toBe(
+      "Watches synced with WatchDesk · 2m ago · Listings last synced just now · 1 watch is only in this browser, not on WatchDesk.",
+    );
+  });
+
+  it("shows nothing with no account connected, whatever else the state holds", () => {
+    expect(describeWatchSync({ mode: "local", listings: { lastIngestedAt: NOW, failed: false } }, NOW)).toBeNull();
+  });
+});
+
 describe("renderWatchSync", () => {
   const line = () => doc.getElementById("watch-sync-status");
 
@@ -96,6 +154,25 @@ describe("renderWatchSync", () => {
     renderWatchSync({ mode: "local" }, doc);
     expect(line().hidden).toBe(true);
     expect(line().textContent).toBe("");
+  });
+
+  it("shows when listings last synced in the same line, and warns when they could not be sent (WD-59)", () => {
+    const status = { mode: "account", offline: false, lastSyncedAt: Date.now(), localOnly: 0 };
+    renderWatchSync({ ...status, listings: { lastIngestedAt: Date.now() - 240000, failed: false } }, doc);
+    expect(line().hidden).toBe(false);
+    expect(line().dataset.tone).toBe("ok");
+    expect(line().textContent).toBe("Watches synced with WatchDesk · just now · Listings last synced 4m ago");
+    // One indicator: the page has no second "last synced" element.
+    expect(doc.querySelectorAll('[role="status"].watch-sync-status')).toHaveLength(1);
+
+    renderWatchSync({ ...status, listings: { lastIngestedAt: Date.now() - 240000, failed: true } }, doc);
+    expect(line().dataset.tone).toBe("warning");
+    expect(line().textContent).toContain("Listings couldn't be sent to WatchDesk last time (last synced 4m ago)");
+  });
+
+  it("styles the warning like the offline line", () => {
+    const css = readFileSync("popup.css", "utf8");
+    expect(css).toMatch(/\.watch-sync-status\[data-tone="offline"\],\s*\.watch-sync-status\[data-tone="warning"\]\s*\{/);
   });
 
   it("does nothing on a page without the line", () => {

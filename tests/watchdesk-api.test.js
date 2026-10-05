@@ -15,6 +15,8 @@ import {
   createWatch,
   updateWatch,
   deleteWatch,
+  ingestListings,
+  INGEST_MAX_LISTINGS,
 } from "../watchdesk-api.js";
 import { WATCHDESK_ORIGIN } from "../config.js";
 
@@ -541,6 +543,107 @@ describe("the watch calls (WD-52's routes)", () => {
     fetchMock.mockResolvedValue(json(200, { watches: [WATCH] }));
     const results = [await listWatches(), await createWatch({ url: "x" }), await updateWatch("i", {}), await deleteWatch("i")];
     expect(JSON.stringify(results)).not.toContain(TOKEN);
+  });
+});
+
+describe("ingestListings (WD-57's route)", () => {
+  const WATCH_ID = "0b7c6c53-6f4a-4f43-9a3b-0c1f4a3f9a11";
+  const LISTING = { id: "401", title: "Engineer", url: "https://www.linkedin.com/jobs/view/401/" };
+  const ANSWER = { watchId: WATCH_ID, siteId: "linkedin", received: 1, inserted: [{ id: "listing-1", jobId: "401" }] };
+  const noWait = () => vi.spyOn(globalThis, "setTimeout").mockImplementation((fn) => (fn(), 0));
+
+  it("POSTs the watch id and the listings with the token, and reads which were new", async () => {
+    fetchMock.mockResolvedValue(json(200, ANSWER));
+    expect(await ingestListings(WATCH_ID, [LISTING])).toEqual({
+      kind: "ok",
+      received: 1,
+      inserted: [{ id: "listing-1", jobId: "401" }],
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${WATCHDESK_ORIGIN}/api/listings/ingest`);
+    expect(init).toMatchObject({ method: "POST", credentials: "omit" });
+    expect(init.headers).toEqual({ "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}` });
+    expect(JSON.parse(init.body)).toEqual({ watchId: WATCH_ID, listings: [LISTING] });
+  });
+
+  it("takes WatchDesk's batch limit as 200", () => {
+    expect(INGEST_MAX_LISTINGS).toBe(200);
+  });
+
+  it("a retried batch that added nothing is still ok", async () => {
+    fetchMock.mockResolvedValue(json(200, { ...ANSWER, inserted: [] }));
+    expect(await ingestListings(WATCH_ID, [LISTING])).toEqual({ kind: "ok", received: 1, inserted: [] });
+  });
+
+  it("a 200 with an odd body is ok with what can be read of it", async () => {
+    fetchMock.mockResolvedValue(json(200, { inserted: [{ id: "listing-1" }, null, { id: "listing-2", jobId: "402" }] }));
+    expect(await ingestListings(WATCH_ID, [LISTING, LISTING])).toEqual({
+      kind: "ok",
+      received: 2,
+      inserted: [{ id: "listing-2", jobId: "402" }],
+    });
+  });
+
+  it("is retried on a network error, a 5xx and a 429, because WatchDesk dedupes repeats", async () => {
+    noWait();
+    fetchMock
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(json(502, {}))
+      .mockResolvedValueOnce(json(429, {}, { "Retry-After": "1" }))
+      .mockResolvedValueOnce(json(200, ANSWER));
+    expect((await ingestListings(WATCH_ID, [LISTING])).kind).toBe("ok");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    // The same body every time.
+    expect(new Set(fetchMock.mock.calls.map(([, init]) => init.body)).size).toBe(1);
+  });
+
+  it("gives up after the retry policy's attempts with the last answer", async () => {
+    noWait();
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+    expect(await ingestListings(WATCH_ID, [LISTING])).toEqual({ kind: "unreachable" });
+    expect(fetchMock).toHaveBeenCalledTimes(RETRY_POLICY.maxAttempts);
+
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue(json(500, { error: "Something went wrong." }));
+    expect(await ingestListings(WATCH_ID, [LISTING])).toEqual({ kind: "error", status: 500 });
+    expect(fetchMock).toHaveBeenCalledTimes(RETRY_POLICY.maxAttempts);
+  });
+
+  it("a 429 asking for longer than a worker should wait ends the call at once", async () => {
+    fetchMock.mockResolvedValue(json(429, {}, { "Retry-After": "60" }));
+    expect(await ingestListings(WATCH_ID, [LISTING])).toEqual({ kind: "rate-limited", retryAfterSeconds: 60 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a 400 is invalid and a 404 is not-found, each sent once", async () => {
+    fetchMock.mockResolvedValueOnce(
+      json(400, { error: "Check the highlighted fields.", fieldErrors: { "listings.3.title": ["Title is required"] } }),
+    );
+    expect(await ingestListings(WATCH_ID, [LISTING])).toEqual({ kind: "invalid", message: "Check the highlighted fields." });
+    fetchMock.mockResolvedValueOnce(json(404, { error: "Watch not found." }));
+    expect(await ingestListings(WATCH_ID, [LISTING])).toEqual({ kind: "not-found" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("a 401 goes to the shared handler and is not retried", async () => {
+    fetchMock.mockResolvedValue(json(401, { error: "Sign in to continue." }));
+    expect(await ingestListings(WATCH_ID, [LISTING])).toEqual({ kind: "unauthorized" });
+    expect(onUnauthorized).toHaveBeenCalledWith(TOKEN);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends nothing with no token stored", async () => {
+    storedToken = null;
+    expect(await ingestListings(WATCH_ID, [LISTING])).toEqual({ kind: "unauthorized" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("never puts the token or a listing in a failure", async () => {
+    noWait();
+    fetchMock.mockResolvedValue(json(500, { error: "Something went wrong." }));
+    const result = JSON.stringify(await ingestListings(WATCH_ID, [LISTING]));
+    expect(result).not.toContain(TOKEN);
+    expect(result).not.toContain("Engineer");
   });
 });
 

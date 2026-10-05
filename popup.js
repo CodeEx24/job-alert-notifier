@@ -1389,6 +1389,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   };
   initAccountCard({ send, setButtonBusy, onState: onAccountState }).catch(() => {});
 
+  // WD-59: the worker says when a check's listings have (or have not)
+  // reached WatchDesk, which can be after it answered "check-now".
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type !== "watch-sync-changed" || !lastState) return;
+    lastState.watchSync = message.watchSync;
+    renderWatchSync(lastState.watchSync);
+  });
+
   // Restore the last search/filter/sort choice before the first render, so
   // reopening the popup shows the feed the way it was left instead of
   // flashing "no filters" for a moment and then re-applying.

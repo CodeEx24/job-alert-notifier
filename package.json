@@ -7,7 +7,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "lint": "eslint config.js watchdesk-api.js account-connection.js watch-sync.js popup-account.js popup-watch-sync.js tests scripts eslint.config.js vitest.config.js && node scripts/check-syntax.js",
+    "lint": "eslint config.js watchdesk-api.js account-connection.js watch-sync.js listing-ingest.js popup-account.js popup-watch-sync.js tests scripts eslint.config.js vitest.config.js && node scripts/check-syntax.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },

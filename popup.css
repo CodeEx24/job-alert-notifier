@@ -647,7 +647,8 @@ button.is-busy {
   margin-bottom: 8px;
 }
 
-.watch-sync-status[data-tone="offline"] {
+.watch-sync-status[data-tone="offline"],
+.watch-sync-status[data-tone="warning"] {
   background: var(--warning-bg);
   color: var(--warning);
   border: 1px solid var(--warning-bg);

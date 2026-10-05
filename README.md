@@ -152,9 +152,15 @@ The card at the top of the popup links the extension to a
 renamed, paused or removed on either side shows up on the other the next time
 the popup opens or a check runs. If WatchDesk can't be reached, the popup
 shows the last-synced list with an "Offline" line, checks keep running on
-it, and changes to the list are refused until it is back. The feed and the
-other settings stay local. Without an account nothing changes: the watches
-stay in this browser.
+it, and changes to the list are refused until it is back.
+
+Each check also sends the **listings** it read to your account, after the
+check itself is done: the feed, notifications, badge and sound work exactly
+as before and never wait for WatchDesk. The line above the watch list says
+when listings last got there ("Listings last synced 2m ago"), or that the
+last attempt couldn't be sent. The feed in the popup and the other settings
+stay local. Without an account nothing changes: the watches stay in this
+browser and nothing is sent anywhere.
 
 1. Click **Connect Account**. A WatchDesk tab opens at
    `/connect-extension?code=…`, showing a short code. Sign in first if asked.

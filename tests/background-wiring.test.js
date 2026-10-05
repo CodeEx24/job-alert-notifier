@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installChromeMock } from "./helpers/chrome-mock.js";
 import { installFakeWatchDesk, TEST_CODE, TEST_POLL_SECRET, TEST_TOKEN } from "./helpers/fake-watchdesk.js";
-import { PAIRING_ALARM, TOKEN_KEY, WATCH_SYNC_KEY } from "../account-connection.js";
+import { LISTING_SYNC_KEY, PAIRING_ALARM, TOKEN_KEY, WATCH_SYNC_KEY } from "../account-connection.js";
 
 let env;
 let api;
@@ -344,7 +344,13 @@ describe("the watch list with an account connected (WD-54)", () => {
 
       const state = await sendMessage({ type: "get-state" });
       expect(state.settings.watches.map((w) => w.label)).toEqual(["All OnlineJobs.ph postings", "From the web"]);
-      expect(state.watchSync).toEqual({ mode: "account", offline: true, lastSyncedAt: Date.now() - 240000, localOnly: 0 });
+      expect(state.watchSync).toEqual({
+        mode: "account",
+        offline: true,
+        lastSyncedAt: Date.now() - 240000,
+        localOnly: 0,
+        listings: { lastIngestedAt: null, failed: false },
+      });
     });
 
     it("the check still runs, on the last-synced list", async () => {
@@ -436,5 +442,249 @@ describe("the watch list with an account connected (WD-54)", () => {
     expect(await sendMessage({ type: "add-watch", url: UPWORK_URL, label: "Local" })).toEqual({ ok: true, error: null });
     expect(storedWatches()).toHaveLength(2);
     expect(api.watchCalls()).toHaveLength(calls);
+  });
+});
+
+describe("a check cycle posts what it read to WatchDesk (WD-59)", () => {
+  // Postings as OnlineJobs.ph's adapter returns them. The titles pass the
+  // default title filter, which covers that site.
+  const job = (n, title = `PHP Developer ${n}`) => ({
+    id: `13100${n}`,
+    title,
+    url: `${OJ_ORIGIN}/jobseekers/job/13100${n}`,
+    postedRaw: "2026-10-02 09:15:00",
+    postedAt: "2026-10-02T01:15:00.000Z",
+    salaryRaw: null,
+  });
+  const listing = (n) => ({ ...job(n), postedApprox: false, easyApply: false, workplaceType: null });
+
+  let page; // what the watched search page shows
+  let popupMessages; // what an open popup would receive from the worker
+  const ingestBodies = () => api.ingestCalls().map((r) => r.body);
+  const local = () => env.chrome.storage.local.dump();
+
+  beforeEach(() => {
+    page = [job(1)];
+    popupMessages = [];
+    api.setSite(() => new Response("<html></html>", { status: 200 }));
+    // The offscreen document is open and parses the page.
+    env.chrome.runtime.getContexts = vi.fn(async () => [{}]);
+    env.chrome.runtime.sendMessage.mockImplementation(async (message) => {
+      if (message.type === "parse-html") return { ok: true, jobs: structuredClone(page) };
+      if (message.type !== "play-sound") popupMessages.push(message);
+      return undefined;
+    });
+  });
+
+  describe("with no account connected", () => {
+    it("checks exactly as before and sends nothing to WatchDesk", async () => {
+      await checkJobsAlarm();
+      page = [job(2), job(1)];
+      await checkJobsAlarm();
+
+      expect(local().feed.map((entry) => entry.sourceKey)).toEqual(["onlinejobsph:131002"]);
+      expect(local().badgeCount).toBe(1);
+      expect(env.chrome.notifications.create).toHaveBeenCalledTimes(1);
+      expect(api.requests.every((r) => r.origin === OJ_ORIGIN)).toBe(true);
+      expect(local()[LISTING_SYNC_KEY]).toBeUndefined();
+      expect(popupMessages).toEqual([]);
+      expect((await sendMessage({ type: "check-now" })).watchSync).toEqual({ mode: "local" });
+      expect(api.requests.every((r) => r.origin === OJ_ORIGIN)).toBe(true);
+    });
+  });
+
+  describe("with an account connected", () => {
+    beforeEach(async () => {
+      await env.chrome.storage.local.set({ [TOKEN_KEY]: TEST_TOKEN });
+    });
+
+    it("posts the listings the cycle read, under the watch's server id, baseline included", async () => {
+      await checkJobsAlarm();
+
+      // The first check of a watch is its baseline: nothing is new locally…
+      expect(local().feed).toEqual([]);
+      expect(env.chrome.notifications.create).not.toHaveBeenCalled();
+      // …but what is on the page still goes to WatchDesk.
+      expect(ingestBodies()).toEqual([{ watchId: api.watches[0].id, listings: [listing(1)] }]);
+      expect(api.ingestCalls()[0].headers.Authorization).toBe(`Bearer ${TEST_TOKEN}`);
+      expect(api.listings.map((row) => row.sourceKey)).toEqual(["onlinejobsph:131001"]);
+      expect(local()[LISTING_SYNC_KEY]).toEqual({ lastIngestedAt: Date.now(), failed: false });
+    });
+
+    it("sends every listing on the page each cycle, not only the new ones", async () => {
+      await checkJobsAlarm();
+      page = [job(2), job(1)];
+      await checkJobsAlarm();
+
+      expect(ingestBodies()[1].listings).toEqual([listing(2), listing(1)]);
+      expect(api.listings).toHaveLength(2);
+    });
+
+    it("runs after the local detection: feed, notification and badge are done before the request is made", async () => {
+      await checkJobsAlarm();
+      page = [job(2), job(1)];
+      let atRequest;
+      api.setIngestRoute(() => {
+        atRequest = {
+          feed: local().feed.map((entry) => entry.sourceKey),
+          lastRunAt: local().lastRunAt,
+          seen: local().seenIds[api.watches[0].id],
+          badgeCount: local().badgeCount,
+          notifications: env.chrome.notifications.create.mock.calls.length,
+          badgeText: env.chrome.action.setBadgeText.mock.calls.at(-1)?.[0],
+        };
+      });
+      vi.setSystemTime(Date.now() + 300000);
+      await checkJobsAlarm();
+
+      expect(atRequest).toEqual({
+        feed: ["onlinejobsph:131002"],
+        lastRunAt: Date.now(),
+        seen: ["131002", "131001"],
+        badgeCount: 1,
+        notifications: 1,
+        badgeText: { text: "1" },
+      });
+    });
+
+    it("sends what the title filter kept, as the local feed does", async () => {
+      page = [job(1), job(2, "Food Safety Manager")];
+      await checkJobsAlarm();
+
+      expect(ingestBodies()[0].listings.map((sent) => sent.id)).toEqual(["131001"]);
+    });
+
+    it("sends nothing for a watch whose check failed", async () => {
+      api.setSite(() => new Response("", { status: 503 }));
+      await checkJobsAlarm();
+
+      expect(local().lastResult[api.watches[0].id].error).toMatch(/^HTTP 503/);
+      expect(api.ingestCalls()).toHaveLength(0);
+    });
+
+    it("skips a watch WatchDesk has not got yet, and sends it once a sync has uploaded it", async () => {
+      api.setWatchRoute((request) => (request.method === "POST" ? api.json(500, {}) : undefined));
+      await checkJobsAlarm();
+      expect(local().lastRunAt).toBe(Date.now());
+      expect(storedWatches().map((w) => w.id)).toEqual(["default"]);
+      expect(api.ingestCalls()).toHaveLength(0);
+
+      api.setWatchRoute(() => undefined);
+      await checkJobsAlarm();
+      expect(ingestBodies()).toEqual([{ watchId: api.watches[0].id, listings: [listing(1)] }]);
+    });
+
+    it("cannot delay or fail the check: with WatchDesk not answering, the cycle is saved at once and the failure is recorded later", async () => {
+      await checkJobsAlarm();
+      const firstAt = Date.now();
+      page = [job(2), job(1)];
+      api.setIngestRoute(api.hang);
+      vi.setSystemTime(firstAt + 300000);
+      const cycleAt = Date.now();
+      let done = false;
+      const listener = checkJobsAlarm().then(() => {
+        done = true;
+      });
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(local().lastRunAt).toBe(cycleAt);
+      expect(local().feed.map((entry) => entry.sourceKey)).toEqual(["onlinejobsph:131002"]);
+      expect(env.chrome.notifications.create).toHaveBeenCalledTimes(1);
+      expect(done).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(120000);
+      await listener;
+      expect(local().lastResult[api.watches[0].id].error).toBeNull();
+      expect(local()[LISTING_SYNC_KEY]).toEqual({ lastIngestedAt: firstAt, failed: true });
+      // One request on the first cycle, then the retry policy's four
+      // attempts on this one.
+      expect(api.ingestCalls()).toHaveLength(5);
+    });
+
+    it("shows the result in the popup's state, without the token", async () => {
+      await checkJobsAlarm();
+      const state = await sendMessage({ type: "get-state" });
+
+      expect(state.watchSync).toEqual({
+        mode: "account",
+        offline: false,
+        lastSyncedAt: Date.now(),
+        localOnly: 0,
+        listings: { lastIngestedAt: Date.now(), failed: false },
+      });
+      expect(JSON.stringify(state)).not.toContain(TEST_TOKEN);
+    });
+
+    it("tells an open popup when the listings have been sent", async () => {
+      await checkJobsAlarm();
+
+      expect(popupMessages).toEqual([
+        {
+          type: "watch-sync-changed",
+          watchSync: {
+            mode: "account",
+            offline: false,
+            lastSyncedAt: Date.now(),
+            localOnly: 0,
+            listings: { lastIngestedAt: Date.now(), failed: false },
+          },
+        },
+      ]);
+      expect(JSON.stringify(popupMessages)).not.toContain(TEST_TOKEN);
+    });
+
+    it("Check now answers the popup before the listings are sent, then tells it how that went", async () => {
+      api.setIngestRoute(api.hang);
+      const state = await sendMessage({ type: "check-now" });
+
+      // Answered with the check done, while the listings are not yet sent.
+      expect(state.runState.lastRunAt).toBe(Date.now());
+      expect(state.watchSync.listings).toEqual({ lastIngestedAt: null, failed: false });
+      expect(popupMessages).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(120000);
+      expect(api.ingestCalls()).toHaveLength(4);
+      expect(popupMessages).toHaveLength(1);
+      expect(popupMessages[0]).toMatchObject({
+        type: "watch-sync-changed",
+        watchSync: { mode: "account", listings: { lastIngestedAt: null, failed: true } },
+      });
+    });
+
+    it("Check now posts the listings too", async () => {
+      await sendMessage({ type: "check-now" });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(ingestBodies()).toEqual([{ watchId: api.watches[0].id, listings: [listing(1)] }]);
+      expect(popupMessages).toHaveLength(1);
+    });
+
+    it("says nothing to the popup when there was nothing to send", async () => {
+      page = [];
+      await checkJobsAlarm();
+
+      expect(api.ingestCalls()).toHaveLength(0);
+      expect(popupMessages).toEqual([]);
+    });
+
+    it("a token refused while sending ends the connection; the check has already been saved", async () => {
+      api.setIngestRoute(() => api.json(401, { error: "Sign in to continue." }));
+      await checkJobsAlarm();
+
+      expect(local()[TOKEN_KEY]).toBeUndefined();
+      expect(local()[LISTING_SYNC_KEY]).toBeUndefined();
+      expect(local().lastRunAt).toBe(Date.now());
+      expect(popupMessages.map((message) => message.type)).toEqual(["account-state-changed"]);
+    });
+  });
+
+  it("a new connection starts without the last one's record", async () => {
+    await env.chrome.storage.local.set({ [LISTING_SYNC_KEY]: { lastIngestedAt: 1, failed: true } });
+    await sendMessage({ type: "account-connect" });
+    api.queuePoll(api.approved);
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(local()[TOKEN_KEY]).toBe(TEST_TOKEN);
+    expect(local()[LISTING_SYNC_KEY]).toBeUndefined();
   });
 });
