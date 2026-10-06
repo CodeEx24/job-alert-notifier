@@ -51,7 +51,19 @@ this file mirrors its must-follow rules.
   answered (GET then PUT of the whole object, one field changed, one
   `captureConnection()`); a failure never blocks or undoes the change, shows
   in the sync line and is sent again on the next sync. The state is never
-  read back from WatchDesk and no other setting is synced.
+  read back from WatchDesk and no other setting is synced there.
+- **The settings have two modes, and one writer** (WD-79): not connected,
+  `intervalMinutes`, `soundId`, `notificationsMuted` and `titleFilter` live
+  in `chrome.storage.sync` as before; connected, WatchDesk is the truth,
+  those keys are the last-synced copy the check cycle reads, and every change
+  goes through `account-settings.js` (API first, refused and never queued
+  when WatchDesk does not take it, limits from `settings-limits.js`). Every
+  PUT of the account's settings, the watcher report included, is built in
+  `changeAccountSettings()`: GET, change only the fields being changed, PUT,
+  one at a time, on one `captureConnection()`; never from the local copy.
+  Reset leaves the account's settings; Import saves the file's through
+  `saveAccountSettings()`. The settings from before the first sync are kept
+  in `chrome.storage.local` for WD-81, never uploaded.
 - **The WatchDesk origin lives only in `config.js`** (and `manifest.json`'s
   `host_permissions`).
 - **No regression in shipped behaviour:** Open All Tabs, the settings panel,

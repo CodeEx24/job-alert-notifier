@@ -135,8 +135,16 @@ export function installFakeWatchDesk({ now = () => Date.now(), saveUrl = (url) =
 
   // The account's settings (WD-56's route, with WD-71's watcherState). PUT
   // replaces them all: a setting left out is a 400, a key that is not a
-  // setting is dropped.
+  // setting is dropped. The rules for a value are the real route's
+  // (lib/validation/settings.ts in the WatchDesk repository), written out
+  // here because that is the server's code, not the extension's (WD-79).
   const SETTINGS_FIELDS = ["intervalMinutes", "soundId", "notificationsMuted", "titleFilter", "watcherState"];
+  const asWatchDeskKeepsKeywords = (keywords) => {
+    const seen = new Set();
+    return keywords
+      .map((keyword) => keyword.trim())
+      .filter((keyword) => keyword && !seen.has(keyword.toLowerCase()) && seen.add(keyword.toLowerCase()));
+  };
   const account = {
     settings: {
       intervalMinutes: 15,
@@ -162,8 +170,22 @@ export function installFakeWatchDesk({ now = () => Date.now(), saveUrl = (url) =
     if ("watcherState" in body && !["running", "paused"].includes(body.watcherState)) {
       fieldErrors.watcherState = ["Watching must be running or paused"];
     }
+    if ("intervalMinutes" in body && ![1, 5, 15, 30].includes(body.intervalMinutes)) {
+      fieldErrors.intervalMinutes = ["Check interval must be 1, 5, 15 or 30 minutes"];
+    }
+    if ("soundId" in body && !["default", "chime", "ping", "alert", "soft", "none"].includes(body.soundId)) {
+      fieldErrors.soundId = ["Choose one of the alert sounds"];
+    }
+    let keywords = body.titleFilter?.keywords;
+    if (Array.isArray(keywords)) {
+      keywords = asWatchDeskKeepsKeywords(keywords);
+      const long = keywords.findIndex((keyword) => keyword.length > 100);
+      if (long >= 0) fieldErrors[`titleFilter.keywords.${long}`] = ["A keyword must be at most 100 characters"];
+      if (keywords.length > 100) fieldErrors["titleFilter.keywords"] = ["Keep at most 100 keywords"];
+    }
     if (Object.keys(fieldErrors).length > 0) return json(400, { error: "Check the highlighted fields.", fieldErrors });
     account.settings = Object.fromEntries(SETTINGS_FIELDS.map((field) => [field, body[field]]));
+    if (Array.isArray(keywords)) account.settings.titleFilter = { ...body.titleFilter, keywords };
     account.settingsUpdatedAt = new Date(now()).toISOString();
     return json(200, { ...account.settings, updatedAt: account.settingsUpdatedAt });
   };

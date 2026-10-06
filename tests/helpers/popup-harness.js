@@ -174,8 +174,16 @@ export async function startExtension({ connected = false, synced = true, watches
   await import(/* @vite-ignore */ moduleUrl("background.js"));
   workerListeners = [...chrome.runtime.onMessage.listeners];
 
-  if (connected && synced) {
-    await ext.send({ type: "sync-watches" });
+  if (connected) {
+    // WD-79: connected, the account's settings are the ones this browser
+    // has, as its watches are the ones this browser had: a test starts from
+    // the same settings in both modes.
+    const { intervalMinutes, soundId, notificationsMuted, titleFilter } = (await ext.send({ type: "get-state" })).settings;
+    api.setSettings({ intervalMinutes, soundId, notificationsMuted, titleFilter });
+    if (synced) {
+      await ext.send({ type: "sync-watches" });
+      await ext.send({ type: "sync-settings" });
+    }
     ext.take();
   }
 

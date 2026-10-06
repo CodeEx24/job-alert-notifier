@@ -24,6 +24,11 @@
 //     (larger / more frequently written run-state, kept local only)
 //     Also `watcherState` (WD-71): "paused" while the user has paused
 //     watching, and then there is no check alarm — see watcher-state.js.
+//   With a WatchDesk account connected (WD-79), intervalMinutes, soundId,
+//   notificationsMuted and titleFilter in chrome.storage.sync are the
+//   last-synced copy of the account's settings: getSettings() reads them as
+//   it always has, and every change to them goes through
+//   account-settings.js — see that file.
 
 import { SITES, siteForUrl, pickWatchTabFromCandidates } from "./sites.js";
 import {
@@ -55,6 +60,13 @@ import {
   reflectWatcherState,
   getWatcherSyncStatus,
 } from "./watcher-state.js";
+import {
+  configureAccountSettings,
+  usesAccountSettings,
+  syncAccountSettings,
+  saveAccountSettings,
+  getSettingsSyncStatus,
+} from "./account-settings.js";
 
 const ALARM_NAME = "check-jobs";
 const OFFSCREEN_URL = "offscreen.html";
@@ -266,6 +278,19 @@ async function getSettings() {
 
 async function saveSettings(partial) {
   await chrome.storage.sync.set(partial);
+}
+
+// WD-79: what the worker answers a settings change, or a settings sync, of
+// a connected browser with: the outcome, the settings as they now stand in
+// the copy (what the popup's controls show, and go back to after a refused
+// change), and where they live.
+async function settingsAnswer(result = {}) {
+  const { intervalMinutes, soundId, notificationsMuted, titleFilter } = await getSettings();
+  return {
+    ...result,
+    settings: { intervalMinutes, soundId, notificationsMuted, titleFilter },
+    settingsSync: await getSettingsSyncStatus(),
+  };
 }
 
 // One-time-per-entry self-heal for a real bug: before cleanTitle() existed
@@ -835,14 +860,18 @@ async function resetExtension() {
   // WD-54: with an account connected the watches are the account's, not
   // this browser's, so a reset leaves them alone (it does not delete them
   // on WatchDesk, and the next sync would bring them back anyway).
+  // WD-79: the same goes for the account's settings: a reset of this
+  // browser does not put them back to the defaults for the web app and
+  // every other browser, and the copy of them here is left as it is.
   const keepWatches = await usesAccountWatches();
-  await saveSettings({
+  const keepSettings = await usesAccountSettings();
+  const defaults = {
     ...(keepWatches ? {} : { watches: [defaultWatch()] }),
-    intervalMinutes: 5,
-    soundId: "chime",
-    notificationsMuted: false,
-    titleFilter: normalizeTitleFilter(null),
-  });
+    ...(keepSettings
+      ? {}
+      : { intervalMinutes: 5, soundId: "chime", notificationsMuted: false, titleFilter: normalizeTitleFilter(null) }),
+  };
+  if (Object.keys(defaults).length > 0) await saveSettings(defaults);
   await saveRunState({ seenIds: {}, lastChecked: {}, lastResult: {}, badgeCount: 0, feed: [], consecutiveErrors: {}, lastRunAt: null, lastGap: null });
   await updateBadge(0);
   // WD-71: running is the default, like everything else a reset puts back.
@@ -919,7 +948,16 @@ async function importSettings(data) {
   if (data.titleFilter) {
     settingsToSave.titleFilter = normalizeTitleFilter(data.titleFilter);
   }
-  await saveSettings(settingsToSave);
+  // WD-79: with an account connected the file's settings are the account's
+  // to take, like any other change to them. The watches are in by now, so a
+  // refusal here is reported beside them rather than undoing the import.
+  let settingsError = null;
+  if (await usesAccountSettings()) {
+    const saved = await saveAccountSettings(settingsToSave);
+    if (!saved.ok) settingsError = saved.error;
+  } else {
+    await saveSettings(settingsToSave);
+  }
   // The imported watches are new to this browser's run-state even if they
   // existed before (possibly on another machine) — reset run-state so they
   // establish a fresh baseline instead of either replaying old seenIds
@@ -929,7 +967,7 @@ async function importSettings(data) {
   await updateBadge(0);
   await scheduleAlarm();
 
-  return { ok: true, imported: importedWatches.length, skipped };
+  return { ok: true, imported: importedWatches.length, skipped, ...(settingsError ? { settingsError } : {}) };
 }
 
 // ---------- notifications ----------
@@ -997,7 +1035,9 @@ async function clearBadge() {
 
 // ---------- alarm scheduling ----------
 
-async function scheduleAlarm() {
+// `firstCheckInMinutes` is when the first check comes: a few seconds later,
+// unless a caller that is itself part of a check says otherwise.
+async function scheduleAlarm({ firstCheckInMinutes = 0.1 } = {}) {
   const { intervalMinutes } = await getSettings();
   await chrome.alarms.clear(ALARM_NAME);
   // WD-71: while the user has paused watching there is no alarm. Every
@@ -1020,9 +1060,23 @@ async function scheduleAlarm() {
   // place. See ensureAlarmScheduled() below for a belt-and-suspenders
   // self-heal in case this — or any other transient cause — ever drops it.
   await chrome.alarms.create(ALARM_NAME, {
-    delayInMinutes: 0.1,
+    delayInMinutes: firstCheckInMinutes,
     periodInMinutes: intervalMinutes,
   });
+}
+
+// WD-79: the copy of a connected account's settings has just been written
+// with different values. If the interval is one of them (changed on the
+// web, or on another browser), the alarm is re-armed on it. The first check
+// then comes a whole interval later, not a few seconds later: this runs
+// during a sync, which is often the start of a check, and a second check
+// must not start on top of that one. Paused, there is no alarm and none is
+// made.
+async function followSyncedInterval() {
+  const existing = await chrome.alarms.get(ALARM_NAME);
+  if (!existing) return;
+  const { intervalMinutes } = await getSettings();
+  if (existing.periodInMinutes !== intervalMinutes) await scheduleAlarm({ firstCheckInMinutes: intervalMinutes });
 }
 
 // Self-heals a dropped alarm. Cheap (one chrome.alarms.get call) enough to
@@ -1121,7 +1175,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   // retry loop, and it cannot throw; when WatchDesk is unreachable the
   // check runs on the last-synced list. With no account connected it sends
   // nothing.
-  await syncWatches().catch(() => {});
+  // WD-79: and the settings, the same way and at the same time, so the two
+  // requests cost the check one wait and not two: an interval, a sound, mute
+  // or a keyword changed on WatchDesk applies to this check.
+  await Promise.all([syncWatches().catch(() => {}), syncAccountSettings().catch(() => {})]);
   let checked = [];
   try {
     checked = await runAllChecks({ lateByMs });
@@ -1190,6 +1247,10 @@ registerAccountConnection();
 // default watch, so that is what its first sync has to account for.
 configureWatchSync({ unsyncedFallback: () => [defaultWatch()] });
 
+// Settings sync (WD-79): the check alarm follows an interval that changed
+// on WatchDesk.
+configureAccountSettings({ onCopyChanged: followSyncedInterval });
+
 // How this browser stands against the connected account: the watch list
 // (WD-54), with it when listings last reached WatchDesk (WD-59), and the
 // watcher state WatchDesk could not be given, if any (WD-71).
@@ -1201,15 +1262,17 @@ async function getSyncStatus() {
 }
 
 // What the popup renders: settings, run state, version, whether watching
-// is running or paused (WD-71), and (WD-54, WD-59) how the watch list and
-// the listings stand against the connected account.
+// is running or paused (WD-71), (WD-54, WD-59) how the watch list and the
+// listings stand against the connected account, and (WD-79) whether the
+// settings are this browser's own or the account's.
 async function getPopupState() {
   const settings = await getSettings();
   const runState = await getRunState();
   const version = await getVersionInfo();
   const watcher = { state: await getWatcherState() };
   const watchSync = await getSyncStatus();
-  return { settings, runState, version, watcher, watchSync };
+  const settingsSync = await getSettingsSyncStatus();
+  return { settings, runState, version, watcher, watchSync, settingsSync };
 }
 
 // ---------- messages from popup.js ----------
@@ -1224,8 +1287,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       case "check-now": {
         await ensureAlarmScheduled();
-        // WD-54: same as the alarm — check the account's current list.
-        await syncWatches().catch(() => {});
+        // WD-54: same as the alarm — check the account's current list,
+        // with (WD-79) its current settings.
+        await Promise.all([syncWatches().catch(() => {}), syncAccountSettings().catch(() => {})]);
         const checked = await runAllChecks();
         sendResponse(await getPopupState());
         // WD-59: after the answer, so the popup is not kept on "Checking…"
@@ -1243,6 +1307,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         // WD-71: after the answer, a watcher state WatchDesk has not got
         // yet is sent again.
         await sendWatcherState();
+        break;
+      }
+      case "sync-settings": {
+        // WD-79: the popup asks for this when it opens and when its settings
+        // panel is opened: one GET of the account's settings into the copy,
+        // answered with the settings as they then stand. Sends nothing, and
+        // answers with this browser's own settings, when no account is
+        // connected.
+        await syncAccountSettings();
+        sendResponse(await settingsAnswer());
         break;
       }
       case "set-watcher-state": {
@@ -1358,13 +1432,31 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ ok: true, label });
         break;
       }
+      // The settings cases below (WD-79): with a WatchDesk account
+      // connected, the change is saved in the account first
+      // (account-settings.js) and can be refused — { ok: false, error } —
+      // for example while offline; either way the answer carries the
+      // settings as they now stand. With none connected they are exactly
+      // what they were.
       case "set-interval": {
+        if (await usesAccountSettings()) {
+          const result = await saveAccountSettings({ intervalMinutes: message.minutes });
+          // As when not connected: the first check on a newly chosen
+          // interval comes a few seconds later.
+          if (result.ok) await scheduleAlarm();
+          sendResponse(await settingsAnswer(result));
+          break;
+        }
         await saveSettings({ intervalMinutes: message.minutes });
         await scheduleAlarm();
         sendResponse({ ok: true });
         break;
       }
       case "set-sound": {
+        if (await usesAccountSettings()) {
+          sendResponse(await settingsAnswer(await saveAccountSettings({ soundId: message.soundId })));
+          break;
+        }
         await saveSettings({ soundId: message.soundId });
         sendResponse({ ok: true });
         break;
@@ -1449,6 +1541,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         break;
       }
       case "set-notifications-muted": {
+        if (await usesAccountSettings()) {
+          const result = await saveAccountSettings({ notificationsMuted: Boolean(message.muted) });
+          sendResponse(await settingsAnswer(result));
+          break;
+        }
         await saveSettings({ notificationsMuted: Boolean(message.muted) });
         sendResponse({ ok: true });
         break;
@@ -1460,6 +1557,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         // normalized the same way getSettings()/importSettings() already
         // normalize it.
         const titleFilter = normalizeTitleFilter(message.titleFilter);
+        if (await usesAccountSettings()) {
+          // WatchDesk trims the keywords and drops repeats; the filter
+          // answered is the one it kept, or after a refusal the one it has.
+          const answer = await settingsAnswer(await saveAccountSettings({ titleFilter }));
+          sendResponse({ ...answer, titleFilter: answer.settings.titleFilter });
+          break;
+        }
         await saveSettings({ titleFilter });
         sendResponse({ ok: true, titleFilter });
         break;

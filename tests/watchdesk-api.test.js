@@ -711,6 +711,21 @@ describe("readSettings and replaceSettings (WD-56's route, WD-71)", () => {
     }
   });
 
+  // WD-79: a settings 400 names its fields by path.
+  it("a 400 carries WatchDesk's message for the field it refused, whichever field that is", async () => {
+    fetchMock.mockResolvedValueOnce(
+      json(400, {
+        error: "Check the highlighted fields.",
+        fieldErrors: { "titleFilter.keywords.3": ["A keyword must be at most 100 characters"] },
+      }),
+    );
+    expect(await replaceSettings(SETTINGS)).toEqual({ kind: "invalid", message: "A keyword must be at most 100 characters" });
+    fetchMock.mockResolvedValueOnce(json(400, { error: "Send the settings as JSON." }));
+    expect(await replaceSettings(SETTINGS)).toEqual({ kind: "invalid", message: "Send the settings as JSON." });
+    fetchMock.mockResolvedValueOnce(json(400, { fieldErrors: { soundId: [7] } }));
+    expect(await replaceSettings(SETTINGS)).toEqual({ kind: "invalid", message: null });
+  });
+
   it("a 401 goes to the shared handler; with no token nothing is sent", async () => {
     fetchMock.mockResolvedValue(json(401, { error: "Sign in to continue." }));
     expect(await replaceSettings(SETTINGS)).toEqual({ kind: "unauthorized" });

@@ -3,8 +3,11 @@
 // sound and its Test button, mute, the title-keyword filter, the settings
 // panel's Pause All / Resume All and per-platform rows, Export, Import and
 // Reset. Each is driven in the real popup with no account connected and with
-// one connected. Settings stay in this browser in both: none is sent to
-// WatchDesk.
+// one connected. With none connected the settings stay in this browser and
+// nothing is sent to WatchDesk. Connected, the interval, the sound, mute and
+// the keyword filter are saved in the account (WD-79) and chrome.storage.sync
+// holds the copy of them, so what a test reads back from it is the same in
+// both modes; tests/popup-account-settings.test.js covers the account side.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startExtension, TESTED_MODES, REFERENCE_ROOT, NOW, WATCHES, OJ_URL, UPWORK_URL } from "./helpers/popup-harness.js";
 
@@ -43,7 +46,9 @@ const RESET_CONFIRM =
 // Messages the popup has sent since the account work began; the shipped
 // popup sends none of them.
 // WD-71 added set-watcher-state (Start Watching / Pause Watching).
-const SINCE_SHIPPED = /^(account-|sync-watches$|listing-drops-seen$|set-watcher-state$)/;
+// WD-79 added sync-settings (loading a connected account's settings); the
+// popup does not send it with no account connected.
+const SINCE_SHIPPED = /^(account-|sync-watches$|sync-settings$|listing-drops-seen$|set-watcher-state$)/;
 const asShipped = (messages) => messages.filter((m) => !SINCE_SHIPPED.test(m.type));
 
 let ext;
@@ -70,6 +75,28 @@ describe.each(TESTED_MODES)("the popup's settings $mode", ({ connected }) => {
     const calls = ext.watchdeskCalls().length;
     await act();
     expect(ext.watchdeskCalls()).toHaveLength(calls);
+    return ext.take();
+  };
+  // The same for a change to a setting. With no account connected nothing
+  // goes to WatchDesk; connected (WD-79), exactly the account's settings are
+  // read and written back, and nothing else is asked.
+  const saved = async (act) => {
+    ext.take();
+    const calls = ext.watchdeskCalls().length;
+    await act();
+    expect(
+      ext
+        .watchdeskCalls()
+        .slice(calls)
+        .map((r) => [r.method, r.path]),
+    ).toEqual(
+      connected
+        ? [
+            ["GET", "/api/settings"],
+            ["PUT", "/api/settings"],
+          ]
+        : [],
+    );
     return ext.take();
   };
 
@@ -139,7 +166,7 @@ describe.each(TESTED_MODES)("the popup's settings $mode", ({ connected }) => {
 
     it.each([1, 15, 30])("choosing %i minutes stores it and re-arms the check alarm", async (minutes) => {
       const popup = await start();
-      const sent = await local(() => popup.choose(popup.$("interval"), String(minutes)));
+      const sent = await saved(() => popup.choose(popup.$("interval"), String(minutes)));
 
       expect(sent).toEqual([{ type: "set-interval", minutes }]);
       expect(ext.sync().intervalMinutes).toBe(minutes);
@@ -169,7 +196,7 @@ describe.each(TESTED_MODES)("the popup's settings $mode", ({ connected }) => {
 
     it("choosing one stores it", async () => {
       const popup = await start();
-      const sent = await local(() => popup.choose(popup.$("sound"), "alert"));
+      const sent = await saved(() => popup.choose(popup.$("sound"), "alert"));
 
       expect(sent).toEqual([{ type: "set-sound", soundId: "alert" }]);
       expect(ext.sync().soundId).toBe("alert");
@@ -185,7 +212,9 @@ describe.each(TESTED_MODES)("the popup's settings $mode", ({ connected }) => {
       popup.$("sound").value = "soft";
       expect(await local(() => popup.click(popup.$("test-sound")))).toEqual([{ type: "test-sound", soundId: "soft" }]);
       expect(ext.sounds).toEqual(["chime", "soft"]);
-      expect(ext.sync().soundId).toBeUndefined();
+      // Connected, the copy of the account's sound is stored (WD-79); the
+      // tone that was only tried is not.
+      expect(ext.sync().soundId).toBe(connected ? "chime" : undefined);
     });
 
     it.each(["none", "default"])("Test plays nothing of the extension's own for '%s'", async (soundId) => {
@@ -229,14 +258,14 @@ describe.each(TESTED_MODES)("the popup's settings $mode", ({ connected }) => {
 
     it("turning it on and off stores it", async () => {
       const popup = await start();
-      expect(await local(() => popup.check(popup.$("mute-notifications"), true))).toEqual([
+      expect(await saved(() => popup.check(popup.$("mute-notifications"), true))).toEqual([
         { type: "set-notifications-muted", muted: true },
       ]);
       expect(ext.sync().notificationsMuted).toBe(true);
       expect((await ext.openPopup()).$("mute-notifications").checked).toBe(true);
 
       const reopened = await ext.openPopup();
-      expect(await local(() => reopened.check(reopened.$("mute-notifications"), false))).toEqual([
+      expect(await saved(() => reopened.check(reopened.$("mute-notifications"), false))).toEqual([
         { type: "set-notifications-muted", muted: false },
       ]);
       expect(ext.sync().notificationsMuted).toBe(false);
@@ -273,12 +302,12 @@ describe.each(TESTED_MODES)("the popup's settings $mode", ({ connected }) => {
 
     it("turning it off and on sends the whole filter and stores it", async () => {
       const popup = await start();
-      expect(await local(() => popup.check(popup.$("title-filter-enabled"), false))).toEqual([
+      expect(await saved(() => popup.check(popup.$("title-filter-enabled"), false))).toEqual([
         { type: "update-title-filter", titleFilter: { enabled: false, keywords: DEFAULT_KEYWORDS } },
       ]);
       expect(ext.sync().titleFilter).toEqual({ enabled: false, keywords: DEFAULT_KEYWORDS });
 
-      expect(await local(() => popup.check(popup.$("title-filter-enabled"), true))).toEqual([
+      expect(await saved(() => popup.check(popup.$("title-filter-enabled"), true))).toEqual([
         { type: "update-title-filter", titleFilter: { enabled: true, keywords: DEFAULT_KEYWORDS } },
       ]);
       expect(ext.sync().titleFilter.enabled).toBe(true);
@@ -286,7 +315,7 @@ describe.each(TESTED_MODES)("the popup's settings $mode", ({ connected }) => {
 
     it.each(["button", "Enter"])("adds a keyword with the %s", async (how) => {
       const popup = await start();
-      const sent = await local(() => add(popup, "  laravel  ", how));
+      const sent = await saved(() => add(popup, "  laravel  ", how));
 
       expect(sent).toEqual([
         { type: "update-title-filter", titleFilter: { enabled: true, keywords: [...DEFAULT_KEYWORDS, "laravel"] } },
@@ -302,7 +331,10 @@ describe.each(TESTED_MODES)("the popup's settings $mode", ({ connected }) => {
       expect(await local(() => add(popup, "PHP"))).toEqual([]);
       expect(popup.$("title-filter-new-keyword").value).toBe("");
       expect(chips(popup)).toEqual(DEFAULT_KEYWORDS);
-      expect(ext.sync().titleFilter).toBeUndefined();
+      // Nothing was stored for it; connected, what is stored is the copy of
+      // the account's filter (WD-79), unchanged.
+      if (connected) expect(ext.sync().titleFilter).toEqual({ enabled: true, keywords: DEFAULT_KEYWORDS });
+      else expect(ext.sync().titleFilter).toBeUndefined();
     });
 
     it("removes a keyword with its ✕", async () => {
@@ -310,7 +342,7 @@ describe.each(TESTED_MODES)("the popup's settings $mode", ({ connected }) => {
       const remove = popup.document.querySelector('.keyword-chip-remove[data-keyword="react"]');
       expect(remove.title).toBe('Remove "react"');
 
-      expect(await local(() => popup.click(remove))).toEqual([
+      expect(await saved(() => popup.click(remove))).toEqual([
         { type: "update-title-filter", titleFilter: { enabled: false, keywords: ["vue"] } },
       ]);
       expect(ext.sync().titleFilter).toEqual({ enabled: false, keywords: ["vue"] });
@@ -560,31 +592,35 @@ describe.each(TESTED_MODES)("the popup's settings $mode", ({ connected }) => {
       expect(ext.sync().intervalMinutes).toBe(30);
     });
 
-    it("puts every setting, the feed and the feed filters back to their defaults", async () => {
+    // WD-79: connected, the four settings are the account's and a reset of
+    // this browser leaves them, like the watches; everything else goes back.
+    it("puts the feed, the feed filters and this browser's own settings back to their defaults", async () => {
       const popup = await start(customised);
       expect(popup.$("feed-sort").value).toBe("posted-asc");
       ext.take();
       await popup.click(popup.$("reset-extension"));
 
       expect(ext.take()).toEqual([{ type: "reset-extension" }, { type: "get-state" }]);
-      expect(ext.sync()).toMatchObject({
-        intervalMinutes: 5,
-        soundId: "chime",
-        notificationsMuted: false,
-        titleFilter: { enabled: true, keywords: DEFAULT_KEYWORDS },
-      });
+      expect(ext.sync()).toMatchObject(
+        connected
+          ? customised.sync
+          : { intervalMinutes: 5, soundId: "chime", notificationsMuted: false, titleFilter: { enabled: true, keywords: DEFAULT_KEYWORDS } },
+      );
       expect(ext.local()).toMatchObject({ feed: [], seenIds: {}, lastRunAt: null, badgeCount: 0, feedFilters: DEFAULT_FEED_FILTERS });
-      expect(ext.chrome.alarms.create).toHaveBeenLastCalledWith("check-jobs", { delayInMinutes: 0.1, periodInMinutes: 5 });
-      expect(popup.$("interval").value).toBe("5");
-      expect(popup.$("sound").value).toBe("chime");
-      expect(popup.$("mute-notifications").checked).toBe(false);
-      expect(popup.$("title-filter-enabled").checked).toBe(true);
+      expect(ext.chrome.alarms.create).toHaveBeenLastCalledWith("check-jobs", {
+        delayInMinutes: 0.1,
+        periodInMinutes: connected ? 30 : 5,
+      });
+      expect(popup.$("interval").value).toBe(connected ? "30" : "5");
+      expect(popup.$("sound").value).toBe(connected ? "ping" : "chime");
+      expect(popup.$("mute-notifications").checked).toBe(connected);
+      expect(popup.$("title-filter-enabled").checked).toBe(!connected);
       expect(popup.$("feed-search").value).toBe("");
       expect(popup.$("feed-workplace-filter").value).toBe("all");
       expect(popup.$("feed-status-filter").value).toBe("all");
       expect(popup.$("feed-sort").value).toBe("found-desc");
       expect([popup.text("settings-status-msg"), popup.$("settings-status-msg").className]).toEqual([
-        "Extension reset to defaults.",
+        connected ? "Extension reset. Your WatchDesk account's watches and settings are unchanged." : "Extension reset to defaults.",
         "settings-status success",
       ]);
     });
@@ -600,19 +636,22 @@ describe.each(TESTED_MODES)("the popup's settings $mode", ({ connected }) => {
       expect(popup.labels()).toEqual(["All OnlineJobs.ph postings"]);
     });
 
-    it.skipIf(!connected)("keeps the watches, which are the account's (WD-54), and says so before resetting", async () => {
+    it.skipIf(!connected)("keeps the watches (WD-54) and the settings (WD-79), which are the account's, and says so before resetting", async () => {
       const popup = await start(customised);
       const calls = ext.watchdeskCalls().length;
       await popup.click(popup.$("reset-extension"));
 
-      expect(popup.confirm.mock.calls[0][0]).toMatch(/^Reset Job Alert Notifier\? This clears the whole feed and all settings back to defaults\. Your watches are kept/);
+      expect(popup.confirm.mock.calls[0][0]).toMatch(/^Reset Job Alert Notifier\? This clears the whole feed in this browser\. Your watches and settings are kept/);
       expect(ext.watches().map((w) => w.label)).toEqual(WATCHES.map((w) => w.label));
       expect(ext.api.watches).toHaveLength(5);
       expect(ext.watchdeskCalls().slice(calls).filter((r) => r.method !== "GET")).toEqual([]);
+      expect(ext.api.settings()).toMatchObject(customised.sync);
     });
   });
 
-  it.skipIf(!connected)("no setting is ever in a request to WatchDesk", async () => {
+  // WD-79: this was "no setting is ever in a request to WatchDesk" (WD-72).
+  // Connected, a setting is now saved in the account, and only there.
+  it.skipIf(!connected)("every setting changed in the popup is saved in the account's settings, and nowhere else on WatchDesk", async () => {
     const popup = await start();
     await popup.choose(popup.$("interval"), "15");
     await popup.choose(popup.$("sound"), "alert");
@@ -620,44 +659,48 @@ describe.each(TESTED_MODES)("the popup's settings $mode", ({ connected }) => {
     await popup.check(popup.$("title-filter-enabled"), false);
     popup.$("title-filter-new-keyword").value = "zzkeywordzz";
     await popup.click(popup.$("title-filter-add-btn"));
-    // A check, and the popup opened again, with those settings stored.
+    // A check, and the popup opened again, with those settings saved.
     ext.api.setSite(() => new Response("<html></html>", { status: 200 }));
     await popup.click(popup.$("check-now"));
     await ext.openPopup();
 
-    const sentToWatchDesk = JSON.stringify(ext.watchdeskCalls().map((r) => [r.url, r.body]));
-    for (const word of ["intervalMinutes", "soundId", "notificationsMuted", "titleFilter", "zzkeywordzz", "alert"]) {
-      expect(sentToWatchDesk).not.toContain(word);
-    }
-    // WD-71: the one thing asked of the settings route is whether the account
-    // has this browser's watcher state. It is a read with no body; nothing
-    // is written there while the state is unchanged.
-    const settingsCalls = ext.watchdeskCalls().filter((r) => /settings/i.test(r.path));
-    expect(settingsCalls.every((r) => r.method === "GET" && r.body === undefined)).toBe(true);
-    // And the sync that ran on reopening left them alone.
-    expect(ext.sync()).toMatchObject({ intervalMinutes: 15, soundId: "alert", notificationsMuted: true });
-    expect(ext.sync().titleFilter.keywords.at(-1)).toBe("zzkeywordzz");
+    const naming = ext
+      .watchdeskCalls()
+      .filter((r) => /intervalMinutes|soundId|notificationsMuted|titleFilter|zzkeywordzz/.test(JSON.stringify([r.url, r.body])));
+    expect(naming).toHaveLength(5);
+    expect(naming.every((r) => r.method === "PUT" && r.path === "/api/settings")).toBe(true);
+    const chosen = {
+      intervalMinutes: 15,
+      soundId: "alert",
+      notificationsMuted: true,
+      titleFilter: { enabled: false, keywords: [...DEFAULT_KEYWORDS, "zzkeywordzz"] },
+    };
+    // The watcher state went back as the account had it.
+    expect(ext.api.settings()).toEqual({ ...chosen, watcherState: "running" });
+    // And the syncs that ran on the check and on reopening left the copy as
+    // it was saved.
+    expect(ext.sync()).toMatchObject(chosen);
   });
 
-  // WD-71: the one write to the settings route. It sends back what the
-  // account already holds, with the watcher state changed.
-  it.skipIf(!connected)("Pause Watching reports the state with the account's own settings, never this browser's", async () => {
+  // WD-71: the watcher state's write to the settings route. It sends back
+  // what the account holds now, with only the watcher state changed.
+  it.skipIf(!connected)("Pause Watching reports the state with the account's settings as they are on WatchDesk now, not this browser's copy", async () => {
     const popup = await start();
     await popup.choose(popup.$("interval"), "30");
-    await popup.choose(popup.$("sound"), "alert");
-    popup.$("title-filter-new-keyword").value = "zzkeywordzz";
-    await popup.click(popup.$("title-filter-add-btn"));
+    // Changed on the web since this browser last loaded them.
+    ext.api.setSettings({ soundId: "soft", titleFilter: { enabled: false, keywords: ["zzwebzz"] } });
     const onWatchDesk = ext.api.settings();
+    const calls = ext.watchdeskCalls().length;
     ext.take();
 
     await popup.click(popup.$("watcher-toggle"));
 
     expect(ext.take().filter((m) => m.type === "set-watcher-state")).toEqual([{ type: "set-watcher-state", state: "paused" }]);
-    const writes = ext.watchdeskCalls().filter((r) => /settings/i.test(r.path) && r.method !== "GET");
+    const writes = ext
+      .watchdeskCalls()
+      .slice(calls)
+      .filter((r) => /settings/i.test(r.path) && r.method !== "GET");
     expect(writes.map((r) => [r.method, r.body])).toEqual([["PUT", { ...onWatchDesk, watcherState: "paused" }]]);
-    expect(JSON.stringify(writes.map((r) => r.body))).not.toContain("zzkeywordzz");
-    // This browser's settings are as the user left them.
-    expect(ext.sync()).toMatchObject({ intervalMinutes: 30, soundId: "alert" });
-    expect(ext.sync().titleFilter.keywords.at(-1)).toBe("zzkeywordzz");
+    expect(ext.api.settings()).toEqual({ ...onWatchDesk, watcherState: "paused" });
   });
 });

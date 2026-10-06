@@ -25,8 +25,9 @@ import {
 const LINKEDIN_AS_STORED = "https://www.linkedin.com/jobs/search/?keywords=react";
 const RESET_HINT_SHIPPED =
   "Clears every watch, the feed, and all settings back to defaults. Can't be undone — export a backup first if you might want any of this again.";
+// WD-79: the settings are the account's as well, and are kept with them.
 const RESET_HINT_CONNECTED =
-  "Clears the feed and all settings back to defaults. Your watches are kept: they belong to your WatchDesk account. Can't be undone.";
+  "Clears the feed in this browser. Your watches and settings are kept: they belong to your WatchDesk account. Can't be undone.";
 const IMPORT_REFUSED =
   "Nothing was imported. Can't reach WatchDesk, so your watches can't be changed right now. The list shown is the last one synced.";
 
@@ -167,7 +168,9 @@ describe.skipIf(REFERENCE_ROOT)("2. an import while WatchDesk cannot be reached"
       "settings-status error",
     ]);
     expect(ext.watches()).toEqual(watches);
-    expect(ext.sync().intervalMinutes).toBeUndefined();
+    // WD-79: the settings are still the ones the account had, not the
+    // file's (15 minutes, Ping, muted).
+    expect(ext.sync()).toMatchObject({ intervalMinutes: 5, soundId: "chime", notificationsMuted: false });
   });
 });
 
@@ -191,7 +194,7 @@ describe("3. the hint under Reset Extension", () => {
     expect(words(hint(popup))).toBe(RESET_HINT_CONNECTED);
 
     await popup.click(popup.$("reset-extension"));
-    expect(popup.confirm.mock.calls[0][0]).toContain("Your watches are kept: they belong to your WatchDesk account.");
+    expect(popup.confirm.mock.calls[0][0]).toContain("Your watches and settings are kept: they belong to your WatchDesk account.");
     expect(ext.watches()).toHaveLength(WATCHES.length);
   });
 

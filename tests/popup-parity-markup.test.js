@@ -124,6 +124,9 @@ describe("popup.html keeps every control of the shipped popup", () => {
 // document order. The shipped copy has none of them, so this is skipped
 // against it.
 const ADDED_SINCE_SHIPPED = [
+  // WD-79: the line at the top of the settings panel that says where the
+  // settings are saved (this browser only, or the connected account).
+  ["settings-sync-note", "p"],
   // WD-111: the hint under Reset Extension. The shipped popup has the same
   // paragraph with the same words and no id; the id lets popup.js say what
   // Reset does with an account connected.
@@ -133,6 +136,8 @@ const ADDED_SINCE_SHIPPED = [
   ["watcher-status", "span"],
   ["watcher-detail", "span"],
   ["watcher-toggle", "button"],
+  // WD-79: why a change to a connected account's settings was refused.
+  ["settings-change-error", "div"],
 ];
 
 describe.skipIf(REFERENCE_ROOT)("popup.html's controls added since the shipped popup", () => {
@@ -148,6 +153,23 @@ describe.skipIf(REFERENCE_ROOT)("popup.html's controls added since the shipped p
     expect(control.closest("#settings-panel")).toBeNull();
     expect(doc.getElementById("settings-panel").compareDocumentPosition(control) & 4).toBe(4);
     expect(control.compareDocumentPosition(doc.getElementById("interval")) & 4).toBe(4);
+  });
+
+  it("the settings note (WD-79) opens the settings panel, and the refusal line follows the interval and the sound it is about", () => {
+    const panel = doc.getElementById("settings-panel");
+    const note = doc.getElementById("settings-sync-note");
+    expect(panel.contains(note)).toBe(true);
+    expect(note.compareDocumentPosition(doc.getElementById("pause-all")) & 4).toBe(4);
+    expect(note.getAttribute("aria-live")).toBe("polite");
+
+    const refusal = doc.getElementById("settings-change-error");
+    expect(refusal.closest("#settings-panel")).toBeNull();
+    expect(refusal.getAttribute("role")).toBe("alert");
+    expect(doc.getElementById("sound").compareDocumentPosition(refusal) & 4).toBe(4);
+    expect(refusal.compareDocumentPosition(doc.getElementById("open-required-tabs")) & 4).toBe(4);
+    // Both are empty until popup.js fills them in.
+    expect(note.textContent).toBe("");
+    expect(refusal.textContent).toBe("");
   });
 });
 

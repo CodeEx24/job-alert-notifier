@@ -162,6 +162,8 @@ Click the **⚙** icon in the header to open the Settings panel.
   settings back to defaults (a single OnlineJobs.ph watch, 5-minute
   interval, chime sound). Asks for confirmation first, since it can't be
   undone — export a backup beforehand if you might want any of it again.
+  With a WatchDesk account connected it clears the feed only: the watches
+  and the settings belong to the account and are kept.
 
 ## Connecting a WatchDesk account
 
@@ -191,9 +193,22 @@ on the next check, oldest first; the line says how many are waiting. Up to
 many until you have seen it and everything else has been sent. A listing
 WatchDesk answers with an error three checks in a row is dropped and counted
 the same way, and does not hold up the others. They only ever go to the
-account they were read for: connecting a different account discards them. The feed in the popup and the other settings stay local.
-Without an account nothing changes: the watches stay in this
-browser and nothing is sent anywhere.
+account they were read for: connecting a different account discards them.
+
+Your **settings** are the account's too: the check interval, the alert
+sound, Mute and the keyword filter. They are loaded from WatchDesk when the
+popup and the Settings panel open and on every check, and a change is saved
+there straight away, so the web app's Settings page and this popup always
+edit the same ones. A line at the top of Settings says where they are saved.
+If WatchDesk can't be reached, checks keep running on the settings last
+loaded and a change is refused with the reason, the control going back to
+what your account has; nothing is queued to be sent later. The settings you
+had chosen in this browser before connecting are not sent anywhere and are
+kept aside in this browser. If the browser is disconnected, the settings last
+loaded simply stay as this browser's own.
+
+The feed in the popup stays local. Without an account nothing changes: the
+watches and the settings stay in this browser and nothing is sent anywhere.
 
 1. Click **Connect Account**. A WatchDesk tab opens at
    `/connect-extension?code=…`, showing a short code. Sign in first if asked.

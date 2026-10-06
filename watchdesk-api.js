@@ -390,25 +390,42 @@ export async function deleteWatch(id) {
 //
 // The account's settings, as WatchDesk keeps them: { intervalMinutes,
 // soundId, notificationsMuted, titleFilter: { enabled, keywords },
-// watcherState }. Only watcher-state.js calls these, to tell WatchDesk
-// whether watching is running or paused; nothing here is copied into this
-// browser's own settings.
+// watcherState }. Only account-settings.js calls these (WD-79): it keeps
+// this browser's copy of them, and is the one place a PUT body is built,
+// for a setting changed in the popup and for watcher-state.js's report of
+// whether watching is running or paused.
 //
 // PUT replaces every setting (one left out is a 400), so a caller changes
 // one by reading them all and sending them all back. Each call is one
-// attempt, like the watch calls: they run on every sync until WatchDesk has
-// the state, so a retry loop would only repeat what the next sync does.
+// attempt, like the watch calls: the read runs again on every sync, and a
+// write comes from a click in the popup, which should hear "offline" at
+// once rather than after the backoff.
 //
 // `connection` binds both calls to one token (WD-110), so settings read
 // from one account are never written to the account that connected next.
 
 const SETTINGS_TIMEOUT_MS = 10000;
 
+// The first message of a settings 400. Its field errors are keyed by path
+// ("intervalMinutes", "titleFilter.keywords.3"), so the first one of any
+// field is taken, else the body's own. Both are WatchDesk's user-facing text.
+function settingsValidationMessage(body) {
+  const fieldErrors = body?.fieldErrors;
+  if (fieldErrors && typeof fieldErrors === "object") {
+    for (const messages of Object.values(fieldErrors)) {
+      const first = Array.isArray(messages) ? messages[0] : null;
+      if (typeof first === "string" && first) return first;
+    }
+  }
+  return typeof body?.error === "string" && body.error ? body.error : null;
+}
+
 // { kind: "ok", settings } — the answer without its `updatedAt`, ready to be
 // sent back — or a failure, the same kinds as a watch call, or
 // { kind: "connection-changed" }.
 function settingsResult(response) {
   if (response.connectionChanged) return { kind: "connection-changed" };
+  if (response.status === 400) return { kind: "invalid", message: settingsValidationMessage(response.body) };
   if (response.status !== 200) return watchFailure(response);
   const body = response.body;
   if (!body || typeof body !== "object" || Array.isArray(body)) return { kind: "error", status: 200 };
