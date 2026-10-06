@@ -26,8 +26,8 @@ Reference documents in the WatchDesk repository:
   behaviours that must not regress, and §9 lists where the code and the
   documents disagree.
 - `docs/adr/0002-extension-auth.md`: the device-pairing design.
-- `docs/tickets/WD-41.md`, `WD-43.md`, `WD-45.md`, `WD-52.md`, `WD-57.md`:
-  the API contracts the extension calls.
+- `docs/tickets/WD-41.md`, `WD-43.md`, `WD-45.md`, `WD-52.md`, `WD-56.md`,
+  `WD-57.md`: the API contracts the extension calls.
 
 ## Non-negotiables
 
@@ -100,6 +100,24 @@ Reference documents in the WatchDesk repository:
   undoes a pause or a start; it is shown in the sync line and sent again on
   the next sync. The state is never read back from WatchDesk, and no other
   setting is synced here.
+- **The settings have two modes, and one writer** (WD-79). With no account
+  connected, `intervalMinutes`, `soundId`, `notificationsMuted` and
+  `titleFilter` live in `chrome.storage.sync`, exactly as before. With one
+  connected, WatchDesk is the source of truth and those four keys are the
+  last-synced copy that `getSettings()` and every check cycle read, with no
+  request; every change to them goes through `account-settings.js`, which
+  calls the API first and refuses the change (never queues it) when WatchDesk
+  does not take it. `PUT /api/settings` replaces everything, `watcherState`
+  included, so **every** write to it, the watcher report too, goes through
+  `changeAccountSettings()`: GET, change only the fields being changed, PUT,
+  one at a time, on one `captureConnection()`. Never build a settings PUT
+  body anywhere else, never from the local copy, and never write those four
+  keys directly in connected mode (Reset leaves them; Import saves the
+  file's through `saveAccountSettings()`). A value WatchDesk would refuse is
+  refused first with the limits in `settings-limits.js`, a copy of the
+  server's. The settings a browser had before its first sync are kept in
+  `chrome.storage.local` (`watchdeskSettingsBeforeConnect`) for WD-81 and
+  never uploaded here. `watcherState` is still never read back.
 - **The WatchDesk origin is named in one place:** `config.js`, plus the same
   origins in `manifest.json`'s `host_permissions`. `tests/config.test.js`
   enforces this.
@@ -117,10 +135,13 @@ Reference documents in the WatchDesk repository:
 | `manifest.json` | Permissions, hosts, content scripts, worker, popup |
 | `background.js` | Service worker: check cycle, feed, notifications, popup messages |
 | `config.js` | The WatchDesk origin (production / development) |
-| `watchdesk-api.js` | The only WatchDesk API client (`requestJson`, the authenticated `authorizedRequest` with retries (WD-44), one function per route, including the four watch routes (WD-54), listing ingestion (WD-59) and reading / replacing the account's settings (WD-71)) |
+| `watchdesk-api.js` | The only WatchDesk API client (`requestJson`, the authenticated `authorizedRequest` with retries (WD-44), one function per route, including the four watch routes (WD-54), listing ingestion (WD-59) and reading / replacing the account's settings (WD-71, WD-79)) |
 | `account-connection.js` | Device pairing, token storage, connected state (WD-42); `captureConnection()`, the handle that binds a request to one token (WD-110), and `isCurrentConnection()` (WD-71) |
 | `watch-sync.js` | The watch list of a connected browser: sync with the account, first-connection upload, add / rename / pause / remove through the API (WD-54), and adding an imported backup's watches (WD-111) |
 | `watcher-state.js` | Whether the periodic check is running or paused, kept in this browser, and reporting it to the connected account's settings (WD-71) |
+| `account-settings.js` | The settings of a connected browser (WD-79): the last-synced copy the check cycle reads, loading and saving them through the API, the settings kept from before connecting, and `changeAccountSettings()`, the one read-modify-write every PUT of the account's settings goes through |
+| `settings-limits.js` | What WatchDesk accepts for a setting, copied from its `lib/settings.ts` and `lib/validation/settings.ts` (WD-79) |
+| `popup-settings-sync.js` | The line at the top of the settings panel that says where the settings are saved (this browser only, or the account), and the reason a change was refused (WD-79) |
 | `popup.html` / `popup.css` / `popup.js` | The popup |
 | `popup-watcher.js` | The popup's Start Watching / Pause Watching control (WD-71) |
 | `popup-account.js` | The popup's account card (WD-42): the one status area, titled with the connected account's email, "Connecting…" until WatchDesk has named it, or "Not connected" (WD-73) |

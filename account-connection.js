@@ -35,6 +35,10 @@
 //                               (running / paused) watcher-state.js has got
 //                               to this connection's account (WD-71).
 //                               Removed here with them, for the same reason.
+//                             watchdeskSettingsSync  when account-settings.js
+//                               last brought this browser's settings in step
+//                               with this connection's account (WD-79).
+//                               Removed here with them, for the same reason.
 //                             watchdeskListingQueue  the listings
 //                               listing-ingest.js could not send yet (WD-60).
 //                               It belongs to an account, not a connection:
@@ -77,6 +81,7 @@ export const WATCH_SYNC_KEY = "watchdeskWatchSync";
 export const LISTING_SYNC_KEY = "watchdeskListingSync";
 export const LISTING_QUEUE_KEY = "watchdeskListingQueue";
 export const WATCHER_SYNC_KEY = "watchdeskWatcherSync";
+export const SETTINGS_SYNC_KEY = "watchdeskSettingsSync";
 export const PAIRING_KEY = "watchdeskPairing";
 export const OUTCOME_KEY = "watchdeskPairingOutcome";
 export const PAIRING_ALARM = "watchdesk-pairing";
@@ -165,7 +170,14 @@ export async function isCurrentConnection(connection) {
 async function discardToken(refusedToken) {
   const discarded = await withLock(async () => {
     if ((await readToken()) !== refusedToken) return false;
-    await chrome.storage.local.remove([TOKEN_KEY, ACCOUNT_KEY, WATCH_SYNC_KEY, LISTING_SYNC_KEY, WATCHER_SYNC_KEY]);
+    await chrome.storage.local.remove([
+      TOKEN_KEY,
+      ACCOUNT_KEY,
+      WATCH_SYNC_KEY,
+      LISTING_SYNC_KEY,
+      WATCHER_SYNC_KEY,
+      SETTINGS_SYNC_KEY,
+    ]);
     await chrome.storage.session.set({ [OUTCOME_KEY]: { reason: "revoked" } });
     return true;
   });
@@ -234,7 +246,7 @@ function endPairing(code, outcome) {
 async function completePairing(token) {
   await withLock(async () => {
     await chrome.storage.local.set({ [TOKEN_KEY]: token, [ACCOUNT_KEY]: null });
-    await chrome.storage.local.remove([ACCOUNT_KEY, WATCH_SYNC_KEY, LISTING_SYNC_KEY, WATCHER_SYNC_KEY]);
+    await chrome.storage.local.remove([ACCOUNT_KEY, WATCH_SYNC_KEY, LISTING_SYNC_KEY, WATCHER_SYNC_KEY, SETTINGS_SYNC_KEY]);
     await chrome.storage.session.remove([PAIRING_KEY, OUTCOME_KEY]);
     await chrome.alarms.clear(PAIRING_ALARM);
   });

@@ -28,13 +28,14 @@
 //                         whenever a token is stored or dropped, so a new
 //                         connection is told the state afresh.
 //
-// Nothing here sees the device token: the calls go through
-// watchdesk-api.js's authorizedRequest(), bound to the connection captured
+// Nothing here sees the device token: the write goes through
+// account-settings.js's changeAccountSettings() (WD-79), the one place that
+// builds a PUT of the account's settings, bound to the connection captured
 // at the start, so settings read from one account are never written to
 // another.
 
 import { captureConnection, isConnected, isCurrentConnection, WATCHER_SYNC_KEY } from "./account-connection.js";
-import { readSettings, replaceSettings } from "./watchdesk-api.js";
+import { changeAccountSettings } from "./account-settings.js";
 
 export const WATCHER_STATE_KEY = "watcherState";
 export const WATCHER_STATES = Object.freeze(["running", "paused"]);
@@ -85,17 +86,13 @@ function unsentState(record, state) {
 // "sent" when the account now holds `state`, "failed" when it does not, and
 // "gone" when the connection ended or changed, so there is nothing to record.
 async function sendState(state, connection) {
-  const read = await readSettings(connection);
-  if (read.kind === "unauthorized" || read.kind === "connection-changed") return "gone";
-  if (read.kind !== "ok") return "failed";
-  if (read.settings.watcherState === state) return "sent";
-
-  // The settings as they were just read, with only the watcher state
-  // changed: PUT replaces them all.
-  const replaced = await replaceSettings({ ...read.settings, watcherState: state }, connection);
-  if (replaced.kind === "unauthorized" || replaced.kind === "connection-changed") return "gone";
+  // The account's settings as they are now, with only the watcher state
+  // changed: PUT replaces them all, so it is built where every other write
+  // to them is (WD-79) and waits its turn behind one already on its way.
+  const result = await changeAccountSettings({ watcherState: state }, connection);
+  if (result.kind === "unauthorized" || result.kind === "connection-changed") return "gone";
   // A WatchDesk that does not know the setting yet answers 200 without it.
-  return replaced.kind === "ok" && replaced.settings.watcherState === state ? "sent" : "failed";
+  return result.kind === "ok" && result.settings.watcherState === state ? "sent" : "failed";
 }
 
 async function runReflect() {

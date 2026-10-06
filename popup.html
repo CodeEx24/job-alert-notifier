@@ -47,6 +47,11 @@
         <button id="settings-close" class="icon-btn" aria-label="Close settings">✕</button>
       </div>
 
+      <!-- Where the check interval, the sound, mute and the keyword filter
+           are saved (WD-79): in this browser only, or in the connected
+           WatchDesk account. Filled in by popup-settings-sync.js. -->
+      <p id="settings-sync-note" class="hint settings-sync-note" aria-live="polite"></p>
+
       <div class="settings-group">
         <div class="settings-row">
           <span class="settings-row-label">All watches</span>
@@ -168,6 +173,10 @@
       <select id="sound"></select>
       <button id="test-sound" class="secondary">Test</button>
     </section>
+
+    <!-- Why a change to a connected account's settings was refused (WD-79).
+         Filled in by popup-settings-sync.js. -->
+    <div id="settings-change-error" class="watch-change-error" role="alert"></div>
 
     <button
       id="open-required-tabs"

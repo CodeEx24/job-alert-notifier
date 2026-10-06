@@ -489,6 +489,17 @@ describe("the connected state", () => {
     expect(env.chrome.storage.local.dump()[mod.WATCHER_SYNC_KEY]).toBeUndefined();
   });
 
+  it("drops when the settings were last synced along with a refused token, and keeps the settings kept from before connecting (WD-79)", async () => {
+    await env.chrome.storage.local.set({
+      [mod.SETTINGS_SYNC_KEY]: { lastSyncedAt: 1, problem: null },
+      watchdeskSettingsBeforeConnect: { takenAt: 1, settings: { intervalMinutes: 1 } },
+    });
+    api.setCurrent(() => api.json(401, { error: "Sign in to continue." }));
+    await mod.refreshAccount();
+    expect(env.chrome.storage.local.dump()[mod.SETTINGS_SYNC_KEY]).toBeUndefined();
+    expect(env.chrome.storage.local.dump().watchdeskSettingsBeforeConnect).toEqual({ takenAt: 1, settings: { intervalMinutes: 1 } });
+  });
+
   it("isCurrentConnection is true only while the token is still the one the connection was captured with (WD-71)", async () => {
     const connection = await mod.captureConnection();
     expect(await mod.isCurrentConnection(connection)).toBe(true);

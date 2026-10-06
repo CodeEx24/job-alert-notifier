@@ -3,6 +3,7 @@ import { SITES, siteForUrl, pickWatchTabFromCandidates } from "./sites.js";
 import { initAccountCard } from "./popup-account.js";
 import { renderWatchSync, renderWatchChange } from "./popup-watch-sync.js";
 import { initWatcherControl, renderWatcher } from "./popup-watcher.js";
+import { renderSettingsSync, renderSettingsChange } from "./popup-settings-sync.js";
 
 // Must match background.js's own ALARM_NAME — they're separate module
 // graphs (background service worker vs. popup page) with no shared import,
@@ -58,7 +59,89 @@ async function syncWatchesAndRender() {
   if (editingWatchId) {
     renderWatchSync(lastState.watchSync);
     renderResetHint(lastState.watchSync);
+    renderSettingsNote();
   } else renderAll();
+}
+
+// --- Settings saved in a WatchDesk account (WD-79) ----------------------
+//
+// With an account connected, the check interval, the alert sound, mute and
+// the keyword filter are the account's. The worker keeps a copy of them,
+// which is what the first render shows; it is asked for the account's
+// current ones when the popup and the settings panel open, and every change
+// is saved in the account before it counts. The worker answers both with
+// `{ settings, settingsSync }`: the settings as they now stand, and where
+// they live. With no account connected none of this runs and the settings
+// are this browser's, as before.
+
+// Changes the worker has not answered yet, and loads it has not answered.
+let pendingSettingChanges = 0;
+let settingsLoads = 0;
+
+function renderSettingsNote() {
+  renderSettingsSync(lastState?.settingsSync, { loading: settingsLoads > 0 });
+}
+
+function renderSettingControls() {
+  syncControls(lastState.settings);
+  document.getElementById("mute-notifications").checked = Boolean(lastState.settings.notificationsMuted);
+  renderTitleFilter(lastState.settings.titleFilter);
+}
+
+// Takes the settings the worker answered with into the state the popup
+// holds, and shows them. Does nothing with an answer that has none: a
+// change made with no account connected.
+function applySettingsAnswer(answer) {
+  if (!answer?.settings || !lastState) return;
+  lastState.settings = { ...lastState.settings, ...answer.settings };
+  lastState.settingsSync = answer.settingsSync;
+  renderSettingsNote();
+  // A change the worker has not answered yet will answer with the settings
+  // as they are after it. Until then its control keeps what the user chose,
+  // rather than flicking back to the value this answer was read with.
+  if (pendingSettingChanges === 0) renderSettingControls();
+}
+
+// Sends a change to one of those settings. Connected, the worker can refuse
+// it — offline, a value WatchDesk does not take — and the control then goes
+// back to the account's value, with the reason under the controls and, when
+// Settings is open, in its status line. With no account connected it always
+// goes through, as before.
+async function changeSetting(message) {
+  pendingSettingChanges += 1;
+  let result;
+  try {
+    result = await send(message);
+  } finally {
+    pendingSettingChanges -= 1;
+  }
+  applySettingsAnswer(result);
+  if (!renderSettingsChange(result) && document.getElementById("settings-panel").classList.contains("open")) {
+    const settingsStatus = document.getElementById("settings-status-msg");
+    settingsStatus.textContent = result.error || "Couldn't save that setting.";
+    settingsStatus.className = "settings-status error";
+  }
+  return result;
+}
+
+// Asks the worker for the connected account's current settings and shows
+// them. The popup has already rendered the copy by the time this runs, so a
+// slow or unreachable WatchDesk never leaves the controls empty. Sends
+// nothing while no account is connected, unless `force`d by one that has
+// just been.
+async function loadAccountSettings({ force = false } = {}) {
+  if (!force && lastState?.settingsSync?.mode !== "account") return;
+  settingsLoads += 1;
+  renderSettingsNote();
+  let answer = null;
+  try {
+    answer = await send({ type: "sync-settings" });
+  } catch {
+    // The worker did not answer; the copy stays on show.
+  }
+  settingsLoads -= 1;
+  applySettingsAnswer(answer);
+  renderSettingsNote();
 }
 
 // --- Tab reuse helpers --------------------------------------------------
@@ -1264,8 +1347,9 @@ function renderSettingsPanel(settings) {
 // as its confirm already did (WD-54). With no account connected it is left
 // exactly as popup.html has it; those words are kept from the first render
 // for when an account is disconnected while the popup is open.
+// WD-79: nor does a reset touch the account's settings.
 const RESET_HINT_ACCOUNT =
-  "Clears the feed and all settings back to defaults. Your watches are kept: they belong to your WatchDesk account. Can't be undone.";
+  "Clears the feed in this browser. Your watches and settings are kept: they belong to your WatchDesk account. Can't be undone.";
 let resetHintLocal = null;
 
 function renderResetHint(watchSync) {
@@ -1324,6 +1408,7 @@ function renderAll() {
   renderFeed(lastState.runState);
   syncControls(lastState.settings);
   renderSettingsPanel(lastState.settings);
+  renderSettingsNote();
   renderResetHint(lastState.watchSync);
   renderCheckStatus().catch(() => {});
   renderVersionInfo(lastState.version);
@@ -1418,7 +1503,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     const status = state?.status === "connected" ? "connected" : "not-connected";
     const changed = accountStatus !== null && status !== accountStatus;
     accountStatus = status;
-    if (changed && lastState) syncWatchesAndRender().catch(() => {});
+    if (changed && lastState) {
+      syncWatchesAndRender().catch(() => {});
+      // WD-79: and so do the settings; a newly connected account's are
+      // loaded now.
+      if (status === "connected") loadAccountSettings({ force: true }).catch(() => {});
+    }
   };
   initAccountCard({ send, setButtonBusy, onState: onAccountState }).catch(() => {});
 
@@ -1464,6 +1554,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   // WD-54: the list above is the last-synced one; now fetch the account's
   // current list. Not awaited: it may wait on the network.
   syncWatchesAndRender().catch(() => {});
+  // WD-79: likewise the settings above are the last-synced copy; now fetch
+  // the account's current ones.
+  loadAccountSettings().catch(() => {});
 
   // Keeps "checked Xm ago / next check in ~Ym" accurate for as long as the
   // popup stays open, without re-fetching or re-rendering everything else.
@@ -1486,6 +1579,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const settingsPanel = document.getElementById("settings-panel");
   document.getElementById("settings-toggle").addEventListener("click", () => {
     settingsPanel.classList.toggle("open");
+    // WD-79: opening the panel loads the connected account's settings.
+    if (settingsPanel.classList.contains("open")) loadAccountSettings().catch(() => {});
   });
   document.getElementById("settings-close").addEventListener("click", () => {
     settingsPanel.classList.remove("open");
@@ -1508,9 +1603,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   // re-render from that state (a watch's Edit, a sync) put the old value
   // back in the control, and Export wrote the old value to the file, until
   // the popup was opened again.
+  // WD-79: all four settings go through changeSetting(), which, with an
+  // account connected, puts the control back when the change was refused.
   document.getElementById("mute-notifications").addEventListener("change", async (e) => {
     const muted = e.target.checked;
-    const result = await send({ type: "set-notifications-muted", muted });
+    const result = await changeSetting({ type: "set-notifications-muted", muted });
     if (result?.ok && lastState) lastState.settings.notificationsMuted = muted;
   });
 
@@ -1523,7 +1620,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // background.js's "update-title-filter" handler.
   document.getElementById("title-filter-enabled").addEventListener("change", async (e) => {
     const current = lastState?.settings?.titleFilter || { enabled: true, keywords: [] };
-    const result = await send({
+    const result = await changeSetting({
       type: "update-title-filter",
       titleFilter: { enabled: e.target.checked, keywords: current.keywords },
     });
@@ -1536,7 +1633,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const keyword = removeBtn.dataset.keyword;
     const current = lastState?.settings?.titleFilter || { enabled: true, keywords: [] };
     const nextKeywords = current.keywords.filter((k) => k !== keyword);
-    const result = await send({
+    const result = await changeSetting({
       type: "update-title-filter",
       titleFilter: { enabled: current.enabled, keywords: nextKeywords },
     });
@@ -1556,7 +1653,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       return; // already there — nothing to add
     }
     const nextKeywords = [...current.keywords, value];
-    const result = await send({
+    const result = await changeSetting({
       type: "update-title-filter",
       titleFilter: { enabled: current.enabled, keywords: nextKeywords },
     });
@@ -1627,15 +1724,20 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     let msg = `Imported ${result.imported} watch${result.imported === 1 ? "" : "es"}.`;
     if (result.skipped) msg += ` Skipped ${result.skipped} unrecognized.`;
-    showSettingsStatus(msg, "success");
+    // WD-79: connected, the file's settings are saved in the account, which
+    // can refuse them when the watches went in.
+    if (result.settingsError) msg += ` The file's settings were not applied: ${result.settingsError}`;
+    showSettingsStatus(msg, result.settingsError ? "error" : "success");
     await refresh();
   });
 
   document.getElementById("reset-extension").addEventListener("click", async () => {
-    // WD-54: a connected account's watches are not this browser's to clear.
+    // WD-54, WD-79: a connected account's watches and settings are not this
+    // browser's to clear.
+    const account = lastState?.watchSync?.mode === "account";
     const confirmed = confirm(
-      lastState?.watchSync?.mode === "account"
-        ? "Reset Job Alert Notifier? This clears the whole feed and all settings back to defaults. Your watches are kept: they belong to your WatchDesk account. This can't be undone."
+      account
+        ? "Reset Job Alert Notifier? This clears the whole feed in this browser. Your watches and settings are kept: they belong to your WatchDesk account. This can't be undone."
         : "Reset Job Alert Notifier? This clears every watch, the whole feed, and all settings back to defaults. This can't be undone — export a backup first if you want to keep any of it."
     );
     if (!confirmed) return;
@@ -1659,7 +1761,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     const sortSelect = document.getElementById("feed-sort");
     if (sortSelect) sortSelect.value = feedSort;
     persistFeedFilters();
-    showSettingsStatus("Extension reset to defaults.", "success");
+    showSettingsStatus(
+      account ? "Extension reset. Your WatchDesk account's watches and settings are unchanged." : "Extension reset to defaults.",
+      "success",
+    );
     await refresh();
   });
 
@@ -1682,13 +1787,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("interval").addEventListener("change", async (e) => {
     const minutes = Number(e.target.value);
-    const result = await send({ type: "set-interval", minutes });
+    const result = await changeSetting({ type: "set-interval", minutes });
     if (result?.ok && lastState) lastState.settings.intervalMinutes = minutes;
   });
 
   document.getElementById("sound").addEventListener("change", async (e) => {
     const soundId = e.target.value;
-    const result = await send({ type: "set-sound", soundId });
+    const result = await changeSetting({ type: "set-sound", soundId });
     if (result?.ok && lastState) lastState.settings.soundId = soundId;
   });
 

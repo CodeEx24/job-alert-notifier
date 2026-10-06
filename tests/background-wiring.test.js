@@ -401,17 +401,23 @@ describe("the watch list with an account connected (WD-54)", () => {
     });
   });
 
-  it("Reset Extension keeps the account's watches and deletes nothing on WatchDesk", async () => {
+  // WD-79: the settings are the account's too, so a reset leaves them, and
+  // the copy of them, as they are.
+  it("Reset Extension keeps the account's watches and settings, and changes nothing on WatchDesk", async () => {
     await sendMessage({ type: "sync-watches" });
     await sendMessage({ type: "add-watch", url: UPWORK_URL, label: "Mine" });
-    await env.chrome.storage.sync.set({ intervalMinutes: 30 });
+    api.setSettings({ intervalMinutes: 30 });
+    await sendMessage({ type: "sync-settings" });
+    const onWatchDesk = api.settings();
 
     expect(await sendMessage({ type: "reset-extension" })).toEqual({ ok: true });
 
     expect(storedWatches()).toEqual(api.watches.map(kept));
     expect(api.watches).toHaveLength(2);
     expect(api.watchCalls("DELETE")).toHaveLength(0);
-    expect(env.chrome.storage.sync.dump().intervalMinutes).toBe(5);
+    expect(env.chrome.storage.sync.dump().intervalMinutes).toBe(30);
+    expect(api.settingsCalls("PUT")).toHaveLength(0);
+    expect(api.settings()).toEqual(onWatchDesk);
   });
 
   it("Import adds the file's watches to the account, without doubling one it already has", async () => {
@@ -504,6 +510,9 @@ describe("a check cycle posts what it read to WatchDesk (WD-59)", () => {
   describe("with an account connected", () => {
     beforeEach(async () => {
       await env.chrome.storage.local.set({ [TOKEN_KEY]: TEST_TOKEN });
+      // WD-79: a connected browser checks on the account's settings, and
+      // this account has notifications on.
+      api.setSettings({ notificationsMuted: false });
     });
 
     it("posts the listings the cycle read, under the watch's server id, baseline included", async () => {

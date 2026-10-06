@@ -740,6 +740,21 @@ button.is-busy {
   font-weight: 600;
 }
 
+/* Where the settings are saved (WD-79): a hint, until WatchDesk cannot be
+   asked, and then in the sync line's warning colours. */
+.settings-sync-note:empty {
+  display: none;
+}
+
+.settings-sync-note[data-tone="offline"],
+.settings-sync-note[data-tone="warning"] {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font-weight: 600;
+}
+
 .watch-change-error {
   color: var(--danger);
   font-size: 11px;
