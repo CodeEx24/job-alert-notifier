@@ -503,6 +503,11 @@ describe.skipIf(REFERENCE_ROOT)("with an account connected", () => {
 
     it("paused, an interval changed on the web makes no alarm", async () => {
       ext = await startExtension({ connected: true, local: { watcherState: "paused" } });
+      // The report of the paused state (WD-71), sent after the first sync was
+      // answered, has to be through first: its PUT is built on the settings
+      // it read, and would put back an interval changed between the two.
+      for (let turns = 0; turns < 20 && ext.api.settings().watcherState !== "paused"; turns += 1) await ext.settle();
+      expect(ext.api.settings().watcherState).toBe("paused");
       ext.chrome.alarms.create.mockClear();
       ext.api.setSettings({ intervalMinutes: 30 });
 
