@@ -166,9 +166,11 @@ async function storeCopy(settings, connection) {
   const kept = await chrome.storage.local.get([SETTINGS_SNAPSHOT_KEY, SETTINGS_COPY_KEY]);
   const local = {};
   // This connection's first sync is about to replace settings the user chose
-  // in this browser; they are kept for WD-81 first.
+  // in this browser; they are kept for WD-81 first. Stored, and waited for,
+  // before the copy is touched: a worker stopped between the two writes, or
+  // a copy write that fails, must not leave them replaced and not kept.
   if (state.lastSyncedAt == null && (!kept[SETTINGS_SNAPSHOT_KEY] || !same(stored, kept[SETTINGS_COPY_KEY]))) {
-    local[SETTINGS_SNAPSHOT_KEY] = { takenAt: Date.now(), settings: stored };
+    await chrome.storage.local.set({ [SETTINGS_SNAPSHOT_KEY]: { takenAt: Date.now(), settings: stored } });
   }
 
   // chrome.storage.sync limits writes per minute and per hour, so only what

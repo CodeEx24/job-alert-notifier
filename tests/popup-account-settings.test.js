@@ -205,6 +205,34 @@ describe.skipIf(REFERENCE_ROOT)("with an account connected", () => {
       expect(popup.$("title-filter-new-keyword").value).toBe("larav");
     });
 
+    it("a load answered while a keyword is being typed leaves the box, and the cursor's field, alone", async () => {
+      const popup = await start();
+      const box = popup.$("title-filter-new-keyword");
+      ext.api.setSettings(onTheWeb);
+      // The load is on its way; the user goes on typing before it answers.
+      popup.$("settings-toggle").click();
+      box.focus();
+      popup.type(box, "lar");
+      popup.type(box, "larav");
+      expect(chips(popup)).not.toEqual(["rust", "go"]);
+
+      await popup.settle();
+
+      // The answer arrived and was shown…
+      expect(chips(popup)).toEqual(["rust", "go"]);
+      expect(popup.$("sound").value).toBe("soft");
+      // …around the box, which is the same element, still focused, still holding the text.
+      expect(popup.$("title-filter-new-keyword")).toBe(box);
+      expect(box.value).toBe("larav");
+      expect(popup.document.activeElement).toBe(box);
+
+      // And the keyword can be finished and added to the list just loaded.
+      popup.type(box, "laravel");
+      await popup.click(popup.$("title-filter-add-btn"));
+      expect(ext.api.settings().titleFilter.keywords).toEqual(["rust", "go", "laravel"]);
+      expect(box.value).toBe("");
+    });
+
     it("a change still being saved is not flicked back by a load that was read before it", async () => {
       const popup = await start();
       // The load is asked for first, the change straight after it; the

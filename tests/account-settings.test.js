@@ -300,6 +300,33 @@ describe("the settings a user had before connecting", () => {
     expect(snapshot()).toBeUndefined();
   });
 
+  it("are stored before the copy is written: a copy write that fails, or a worker stopped there, still leaves them kept", async () => {
+    await env.chrome.storage.sync.set(OWN);
+    await connect();
+    const order = [];
+    env.chrome.storage.local.set.mockClear();
+    const keepLocal = env.chrome.storage.local.set.getMockImplementation();
+    env.chrome.storage.local.set.mockImplementation(async (items) => {
+      order.push(`local:${Object.keys(items).join(",")}`);
+      return keepLocal(items);
+    });
+    env.chrome.storage.sync.set.mockImplementationOnce(async () => {
+      order.push("sync");
+      throw new Error("MAX_WRITE_OPERATIONS_PER_MINUTE");
+    });
+
+    expect((await settings.syncAccountSettings()).problem).toBe("unavailable");
+
+    expect(order.slice(0, 2)).toEqual([`local:${settings.SETTINGS_SNAPSHOT_KEY}`, "sync"]);
+    expect(snapshot()).toEqual({ takenAt: Date.now(), settings: OWN });
+    // The user's settings are still in place, and still kept after the sync
+    // that then gets through.
+    expect(copy()).toEqual(OWN);
+    await settings.syncAccountSettings();
+    expect(copy()).toEqual(SYNCED);
+    expect(snapshot().settings).toEqual(OWN);
+  });
+
   it("survive a disconnect and a reconnect in which nothing was changed here", async () => {
     await env.chrome.storage.sync.set(OWN);
     await connect();
@@ -652,6 +679,25 @@ describe("one write at a time", () => {
     expect(api.settings()).toEqual({ ...ON_WATCHDESK, intervalMinutes: 1, titleFilter: { enabled: false, keywords: ["go"] } });
     // The report is not a sync: the copy is left for the next one.
     expect(copy()).toEqual(SYNCED);
+  });
+
+  // A known limit, pinned so WD-80 sees it change: the route has no version
+  // check, so what is changed on the web between a write's GET and its PUT
+  // is replaced by the PUT. This is the interleaving that failed the first
+  // CI run of "paused, an interval changed on the web makes no alarm".
+  it("a web edit landing between the report's read and its write is put back by the write", async () => {
+    await watcher.saveWatcherState("paused");
+    api.setSettingsRoute((request) => {
+      // The read has been answered with 15 minutes; the web edit arrives
+      // just ahead of the write.
+      if (request.method === "PUT") api.setSettings({ intervalMinutes: 30 });
+      return undefined;
+    });
+
+    await watcher.reflectWatcherState();
+
+    expect(sinceSync().map((r) => r.method)).toEqual(["GET", "PUT"]);
+    expect(api.settings()).toEqual({ ...ON_WATCHDESK, watcherState: "paused" });
   });
 
   it("changeAccountSettings is the one place a PUT body is built: the fields given, over what was just read", async () => {
