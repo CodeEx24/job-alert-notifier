@@ -107,6 +107,16 @@ this file mirrors its must-follow rules.
   connection, the queue and the answers are working state
   (`docs/tickets/WD-83.md`). The extension cannot undo an import; "Import
   again" is the alternative, and "Not now" to it is not a "no".
+- **Only the import says when a listing was found** (WD-117). Its listing
+  requests carry each feed entry's `detectedAt` as an ISO 8601 string
+  (`foundAt()` in `local-import.js`), never the number, and no field at all
+  for an entry with no time that can be sent. The limits are WatchDesk's:
+  never clamp or filter by them. The check cycle and its retry queue never
+  send `detectedAt`. `detectedTimes` in the answer may be absent, empty or
+  unknown; an `"out-of-range"` on an added listing is counted in
+  `counts.listingsDatedToday` (absent while zero, not one of the six counts).
+  An import raises no notification, tone or badge
+  (`docs/tickets/WD-117.md`).
 - **The WatchDesk origin lives only in `config.js`** (and `manifest.json`'s
   `host_permissions`).
 - **No regression in shipped behaviour:** Open All Tabs, the settings panel,

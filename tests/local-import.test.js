@@ -288,12 +288,13 @@ describe("Import", () => {
     expect(last("PATCH /api/listings/:id")).toBeLessThan(first("PUT /api/settings"));
 
     // One watch a request, named by its id on WatchDesk, with the adapter's
-    // fields and nothing else: no local id, no detection time, no mark.
+    // fields, when this browser found the posting (WD-117; its tests are in
+    // import-detected-time.test.js) and nothing else: no local id, no mark.
     for (const call of ext.api.ingestCalls()) {
       expect(ext.api.watches.map((w) => w.id)).toContain(call.body.watchId);
       for (const listing of call.body.listings) {
         expect(Object.keys(listing).sort()).toEqual(
-          ["easyApply", "id", "postedApprox", "postedAt", "postedRaw", "salaryRaw", "title", "url", "workplaceType"].sort(),
+          ["detectedAt", "easyApply", "id", "postedApprox", "postedAt", "postedRaw", "salaryRaw", "title", "url", "workplaceType"].sort(),
         );
       }
     }

@@ -319,13 +319,13 @@ describe("a second device: the account already has some of the listings", () => 
     expect(kept.listing).toMatchObject({ salaryRaw: "$10/hr", workplaceType: "Remote", postedRaw: "1 day ago", postedAt: "2026-10-04T00:00:00.000Z" });
     expect(kept).toMatchObject({ listingId: "listing-had-1", watchId: theirs.id, status: "offer" });
     // Nothing the extension sends could say otherwise: no status, no watch
-    // of its own choosing, no date found.
+    // of its own choosing. The date this browser found it is sent (WD-117),
+    // and WatchDesk keeps the one it has: import-detected-time.test.js.
     for (const call of ext.api.ingestCalls()) {
       expect(Object.keys(call.body).sort()).toEqual(["listings", "watchId"]);
       for (const listing of call.body.listings) {
         expect(listing).not.toHaveProperty("status");
         expect(listing).not.toHaveProperty("applied");
-        expect(listing).not.toHaveProperty("detectedAt");
       }
     }
   });

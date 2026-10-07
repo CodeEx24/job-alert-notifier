@@ -92,14 +92,14 @@ describe("what the card says (describeImport)", () => {
       // WD-82: an import adds to the account, it replaces nothing there.
       "A watch or a listing your account already has is not added twice: the account keeps its own, with its name, paused state and status.",
       // Said before the choice, in plain words.
-      "Imported listings will be dated the day of the import on WatchDesk, not the day this browser found them. The date each job was posted is kept.",
+      "Imported listings keep the date this browser found them. One your account already has keeps the date it has there.",
       "Not now keeps everything in this browser and starts the account without it. The watch list here then shows your account's watches; this browser's own are kept, and you can import them later from Settings.",
       "Until you choose, nothing is sent to WatchDesk and this browser keeps checking its own watches.",
     ]);
   });
 
   it("says nothing about dates when there is no listing to import, and says it in the second question too", () => {
-    const dated = (status) => describeImport({ phase: "offered", ...status }).details.filter((line) => line.includes("dated the day of the import"));
+    const dated = (status) => describeImport({ phase: "offered", ...status }).details.filter((line) => line.includes("keep the date this browser found them"));
     expect(dated({ again: false, watches: 2, listings: 0, settings: true })).toEqual([]);
     expect(dated({ again: true, watches: 2, listings: 3, settings: false })).toHaveLength(1);
     expect(dated({ again: true, watches: 2, listings: 0, settings: false })).toEqual([]);
@@ -141,7 +141,7 @@ describe("what the card says (describeImport)", () => {
     });
   });
 
-  it("a clean end says what was uploaded, and that WatchDesk dates the listings from today", () => {
+  it("a clean end says what was uploaded, and nothing about dates: the listings kept theirs (WD-117)", () => {
     expect(
       describeImport({
         phase: "done",
@@ -155,8 +155,7 @@ describe("what the card says (describeImport)", () => {
       details: expect.arrayContaining([
         "2 applied marks carried over.",
         "Settings imported: the alert sound.",
-        "WatchDesk shows imported listings as found today: it doesn't take the date this browser found them.",
-        "Nothing was removed from this browser.",
+          "Nothing was removed from this browser.",
       ]),
       // Not the connected account's import as far as this status says: no
       // way to remove anything.
@@ -270,7 +269,6 @@ describe("in the popup, on a second device whose account already has some of it 
       "1 applied mark not carried over: WatchDesk already had that listing, and its own status was left as it is.",
       "Settings imported: the alert sound.",
       "1 watch your account already had has a different name or paused state there. The account's was kept.",
-      "WatchDesk shows imported listings as found today: it doesn't take the date this browser found them.",
       // WD-83: what this browser still has, and what can be done.
       "Nothing was removed from this browser. Its feed still has all 2 listings.",
       "It also keeps a copy of your settings (the alert sound) from before it was connected, inside this extension and in this browser only. The copy stays until you remove it below.",
@@ -295,7 +293,7 @@ describe("in the popup, after a first pairing", () => {
     );
     expect(details()).toHaveLength(5);
     expect(details()[1]).toContain("already has is not added twice");
-    expect(details()[2]).toContain("Imported listings will be dated the day of the import on WatchDesk");
+    expect(details()[2]).toContain("Imported listings keep the date this browser found them");
     expect(shownButtons()).toEqual(["Import", "Not now"]);
     // Connected, by name, and not syncing: no sync line, the browser's own
     // watches in the list, and the settings panel says why.
@@ -328,7 +326,6 @@ describe("in the popup, after a first pairing", () => {
     expect(details()).toEqual([
       "1 applied mark carried over.",
       "Settings imported: the alert sound.",
-      "WatchDesk shows imported listings as found today: it doesn't take the date this browser found them.",
       "Nothing was removed from this browser. Its feed still has all 2 listings.",
       "It also keeps a copy of your settings (the alert sound) from before it was connected, inside this extension and in this browser only. The copy stays until you remove it below.",
       "If the import looks wrong, you can leave everything as it is, or import again: what your account already has is not added twice. The extension can't undo an import or delete anything from your account; that is done on WatchDesk.",

@@ -126,6 +126,16 @@ export function installFakeWatchDesk({ now = () => Date.now(), saveUrl = (url) =
         : { postedRaw: sent.postedRaw ?? null, postedAt: sent.postedAt ?? null, postedApprox: sent.postedApprox ?? false }),
     };
   };
+  // WD-117: a listing may say when it was first found (`detectedAt`), as
+  // the real route takes it: an ISO 8601 date-time with an offset, anything
+  // else (the extension's own epoch milliseconds first) a 400 that stores
+  // nothing; used only for a listing the request adds, and only from 5 years
+  // back to 5 minutes ahead of the server's clock (a time ahead of the clock
+  // is stored as the clock). The answer then says what became of each time.
+  const ISO_WITH_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+  const isDetectedAt = (value) => typeof value === "string" && ISO_WITH_OFFSET.test(value) && Number.isFinite(Date.parse(value));
+  const DETECTED_AT_MAX_AGE_MS = 5 * 365 * 24 * 60 * 60 * 1000;
+  const DETECTED_AT_MAX_AHEAD_MS = 5 * 60 * 1000;
   const answerIngest = (request) => {
     const scripted = ingestRoute(request);
     if (scripted) return scripted;
@@ -137,24 +147,56 @@ export function installFakeWatchDesk({ now = () => Date.now(), saveUrl = (url) =
         fieldErrors: { listings: ["Send at most 200 listings in one request"] },
       });
     }
+    const badTime = sent.findIndex((listing) => listing?.detectedAt != null && !isDetectedAt(listing.detectedAt));
+    if (badTime >= 0) {
+      return json(400, {
+        error: "Check the highlighted fields.",
+        fieldErrors: { [`listings.${badTime}.detectedAt`]: ["Detected date must be an ISO 8601 date"] },
+      });
+    }
     const watch = watches.find((w) => w.id === request.body.watchId);
     if (!watch) return json(404, { error: "Watch not found." });
     const inserted = [];
     const inBatch = new Set();
-    for (const listing of sent) {
+    const clock = now();
+    const detectedTimes = [];
+    for (const sentListing of sent) {
+      // The time is not one of the listing's own fields: it is the row's.
+      const listing = { ...sentListing };
+      delete listing.detectedAt;
+      const asked = sentListing.detectedAt == null ? null : Date.parse(sentListing.detectedAt);
       const sourceKey = `${watch.siteId}:${listing.id}`;
       if (inBatch.has(sourceKey)) continue;
       inBatch.add(sourceKey);
       const had = listings.find((row) => row.sourceKey === sourceKey);
       if (had) {
         refresh(had, listing);
+        if (asked !== null) detectedTimes.push({ jobId: listing.id, detectedAt: had.detectedAt ?? null, outcome: "kept" });
         continue;
       }
-      const row = { listingId: `listing-${listings.length + 1}`, sourceKey, watchId: watch.id, listing, status: "new" };
+      const used = asked !== null && asked >= clock - DETECTED_AT_MAX_AGE_MS && asked <= clock + DETECTED_AT_MAX_AHEAD_MS;
+      const row = {
+        listingId: `listing-${listings.length + 1}`,
+        sourceKey,
+        watchId: watch.id,
+        listing,
+        status: "new",
+        detectedAt: new Date(used ? Math.min(asked, clock) : clock).toISOString(),
+      };
       listings.push(row);
       inserted.push({ id: row.listingId, jobId: listing.id });
+      if (asked !== null) {
+        detectedTimes.push({ jobId: listing.id, detectedAt: row.detectedAt, outcome: used ? "used" : "out-of-range" });
+      }
     }
-    return json(200, { watchId: watch.id, siteId: watch.siteId, received: inBatch.size, inserted });
+    return json(200, {
+      watchId: watch.id,
+      siteId: watch.siteId,
+      received: inBatch.size,
+      inserted,
+      // Only when a time was sent: a check is answered as it always was.
+      ...(detectedTimes.length > 0 ? { detectedTimes } : {}),
+    });
   };
 
   // A listing's status (WD-67's route): PATCH /api/listings/[id] with
@@ -298,7 +340,7 @@ export function installFakeWatchDesk({ now = () => Date.now(), saveUrl = (url) =
       watchRoute = answer;
     },
     // The account's stored listings ({ listingId, sourceKey, watchId,
-    // listing, status }), and the calls made to the ingest route.
+    // listing, status, detectedAt }), and the calls made to the ingest route.
     listings,
     ingestCalls: () => requests.filter((r) => r.path === "/api/listings/ingest"),
     // Scripts the ingest route, like setWatchRoute.

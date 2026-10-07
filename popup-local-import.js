@@ -217,9 +217,16 @@ function describeResult(status) {
         : `${counts.watchesMatchedDiffer} watches your account already had have a different name or paused state there. The account's were kept.`,
     );
   }
-  // Said whenever a listing went up: WatchDesk dates it itself.
-  if (counts.listingsNew > 0) {
-    details.push("WatchDesk shows imported listings as found today: it doesn't take the date this browser found them.");
+  // WD-117: a listing that went up keeps the date this browser found it.
+  // Said only of the ones that did not; a report from before the count was
+  // kept has none.
+  const datedToday = whole(counts.listingsDatedToday);
+  if (datedToday > 0) {
+    details.push(
+      `${listingsWord(datedToday)} ${datedToday === 1 ? "was" : "were"} imported with today's date: this browser had no date for ${
+        datedToday === 1 ? "it" : "them"
+      } that your account accepts.`,
+    );
   }
   return {
     partial: left.length > 0,
@@ -267,10 +274,10 @@ function sortCopies(copies) {
 
 const sentence = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 
-// Said before the user chooses, not only afterwards: WatchDesk stamps a
-// listing with the day it receives it.
-const DATED_TODAY =
-  "Imported listings will be dated the day of the import on WatchDesk, not the day this browser found them. The date each job was posted is kept.";
+// Said before the user chooses, not only afterwards (WD-117): WatchDesk
+// takes the date this browser found a listing, for a listing it adds.
+const DATES_KEPT =
+  "Imported listings keep the date this browser found them. One your account already has keeps the date it has there.";
 
 // Said before the user chooses too (WD-82): an import adds to an account, it
 // does not overwrite what is there.
@@ -310,7 +317,7 @@ export function describeImport(status, { step = null, removed = null } = {}) {
         details: [
           "What your account already has is not added twice, so importing again can only add what the first import missed.",
           ...(status.settings ? ["Your settings from before this browser was connected replace the account's."] : []),
-          ...(status.listings > 0 ? [DATED_TODAY] : []),
+          ...(status.listings > 0 ? [DATES_KEPT] : []),
           "Not now goes back to the report and changes nothing.",
         ],
         buttons: ["accept", "decline"],
@@ -326,7 +333,7 @@ export function describeImport(status, { step = null, removed = null } = {}) {
         details: [
           "Import uploads them to your account. Your settings from then replace the account's.",
           ALREADY_THERE,
-          ...(status.listings > 0 ? [DATED_TODAY] : []),
+          ...(status.listings > 0 ? [DATES_KEPT] : []),
           "Not now leaves everything as it is.",
         ],
         buttons: ["accept", "decline"],
@@ -341,7 +348,7 @@ export function describeImport(status, { step = null, removed = null } = {}) {
       details: [
         "Import uploads them to your account. They stay in this browser too.",
         ALREADY_THERE,
-        ...(status.listings > 0 ? [DATED_TODAY] : []),
+        ...(status.listings > 0 ? [DATES_KEPT] : []),
         "Not now keeps everything in this browser and starts the account without it. The watch list here then shows your account's watches; this browser's own are kept, and you can import them later from Settings.",
         "Until you choose, nothing is sent to WatchDesk and this browser keeps checking its own watches.",
       ],
