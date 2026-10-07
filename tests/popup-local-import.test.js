@@ -131,11 +131,12 @@ describe("what the card says (describeImport)", () => {
         problem: { message: "Can't reach WatchDesk.", retryAt: NOW + 60000 },
         counts: COUNTS,
       }),
-    ).toEqual({
+    ).toMatchObject({
       tone: "problem",
       title: "The import has stopped for now",
       text: "Can't reach WatchDesk. It stopped while uploading your listings, and will be tried again automatically. Nothing is lost.",
-      details: [],
+      // WD-83: and what did get in so far (tests/import-confirmation.test.js).
+      details: ["The import is not finished: the table shows only what has reached your account so far."],
       buttons: ["retry"],
     });
   });
@@ -146,14 +147,19 @@ describe("what the card says (describeImport)", () => {
         phase: "done",
         counts: { ...COUNTS, watchesUploaded: 4, watchesMatched: 1, listingsUploaded: 41, listingsNew: 41, appliedMarked: 2, settingsSaved: ["soundId"] },
       }),
-    ).toEqual({
+    ).toMatchObject({
       tone: "ok",
       title: "Your data was imported",
       text: "4 watches uploaded, 1 watch was already in your account, 41 listings uploaded, 2 marked applied, your settings saved.",
-      details: [
+      // WD-83: the rest of the report is in tests/import-confirmation.test.js.
+      details: expect.arrayContaining([
+        "2 applied marks carried over.",
+        "Settings imported: the alert sound.",
         "WatchDesk shows imported listings as found today: it doesn't take the date this browser found them.",
-        "Everything is still in this browser too.",
-      ],
+        "Nothing was removed from this browser.",
+      ]),
+      // Not the connected account's import as far as this status says: no
+      // way to remove anything.
       buttons: ["dismiss"],
     });
   });
@@ -172,16 +178,27 @@ describe("what the card says (describeImport)", () => {
         listingsRefused: 1,
         appliedNotCarried: 2,
         settingsRefused: [{ setting: "titleFilter", reason: "Keep at most 100 keywords" }],
+        // WD-83: by site, and each reason in its own words.
+        watchesBySite: {
+          linkedin: { watchesUploaded: 2, watchesMatched: 0, watchesRefused: 0 },
+          glassdoor: { watchesUploaded: 0, watchesMatched: 0, watchesRefused: 1 },
+        },
+        bySite: {
+          linkedin: { listingsNew: 10, listingsNoWatch: 2, listingsWatchGone: 1 },
+          upwork: { listingsInvalid: 1, listingsRefused: 1 },
+        },
       },
     });
     expect(view).toMatchObject({ tone: "problem", title: "Your data was imported, with some left out", buttons: ["dismiss"] });
-    expect(view.details).toEqual([
-      "WatchDesk didn't accept 1 watch. It stays in this browser.",
-      "3 listings not uploaded: their watch isn't on WatchDesk. They stay in this browser.",
-      "WatchDesk couldn't store 2 listings.",
+    expect(view.details.slice(0, 8)).toEqual([
+      "LinkedIn: 2 listings left out, because their watch isn't in your account.",
+      "LinkedIn: 1 listing left out, because its watch was deleted on WatchDesk during the import.",
+      "Glassdoor: WatchDesk didn't accept 1 watch. It stays in this browser.",
+      "Upwork: 1 listing left out, because WatchDesk didn't accept it.",
+      "Upwork: 1 listing left out, because it isn't complete enough to store.",
+      "Listings that were left out are still in this browser's feed.",
       "2 applied marks not carried over: WatchDesk already had those listings, and its own status was left as it is.",
       "The keyword filter wasn't imported: Keep at most 100 keywords",
-      "Everything is still in this browser too.",
     ]);
   });
 
@@ -251,9 +268,13 @@ describe("in the popup, on a second device whose account already has some of it 
     );
     expect(details()).toEqual([
       "1 applied mark not carried over: WatchDesk already had that listing, and its own status was left as it is.",
+      "Settings imported: the alert sound.",
       "1 watch your account already had has a different name or paused state there. The account's was kept.",
       "WatchDesk shows imported listings as found today: it doesn't take the date this browser found them.",
-      "Everything is still in this browser too.",
+      // WD-83: what this browser still has, and what can be done.
+      "Nothing was removed from this browser. Its feed still has all 2 listings.",
+      "It also keeps a copy of your settings (the alert sound) from before it was connected, inside this extension and in this browser only. The copy stays until you remove it below.",
+      "If the import looks wrong, you can leave everything as it is, or import again: what your account already has is not added twice. The extension can't undo an import or delete anything from your account; that is done on WatchDesk.",
     ]);
     // The list is the account's: the watch under the account's name, paused.
     expect(page.labels()).toContain("My OJ search");
@@ -305,11 +326,16 @@ describe("in the popup, after a first pairing", () => {
     expect(page.text("local-import-title")).toBe("Your data was imported");
     expect(page.text("local-import-text")).toBe("5 watches uploaded, 2 listings uploaded, 1 marked applied, your settings saved.");
     expect(details()).toEqual([
+      "1 applied mark carried over.",
+      "Settings imported: the alert sound.",
       "WatchDesk shows imported listings as found today: it doesn't take the date this browser found them.",
-      "Everything is still in this browser too.",
+      "Nothing was removed from this browser. Its feed still has all 2 listings.",
+      "It also keeps a copy of your settings (the alert sound) from before it was connected, inside this extension and in this browser only. The copy stays until you remove it below.",
+      "If the import looks wrong, you can leave everything as it is, or import again: what your account already has is not added twice. The extension can't undo an import or delete anything from your account; that is done on WatchDesk.",
     ]);
     expect(page.$("local-import").dataset.tone).toBe("ok");
-    expect(shownButtons()).toEqual(["Close"]);
+    // WD-83: "Close" first; the button that removes something is last.
+    expect(shownButtons()).toEqual(["Close", "Import again…", "Remove the earlier copies…"]);
     // The popup is now an ordinary connected one: the account's list (the
     // same five watches), the sync line, the account's settings.
     expect(page.labels()).toEqual(WATCHES.map((w) => w.label));
@@ -321,10 +347,12 @@ describe("in the popup, after a first pairing", () => {
 
     await page.click(page.$("local-import-dismiss"));
     expect(page.$("local-import").hidden).toBe(true);
-    // And it does not come back.
+    // And it does not come back by itself (WD-83: the settings panel has
+    // the way back to it).
     page = await ext.openPopup();
     expect(page.$("local-import").hidden).toBe(true);
     expect(page.$("local-import-again-group").hidden).toBe(true);
+    expect(page.$("local-import-review-group").hidden).toBe(false);
   });
 
   it("shows the progress as it goes", async () => {

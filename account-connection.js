@@ -136,10 +136,6 @@ const IMPORT_UNANSWERED = ["connecting", "offered"];
 // again from the settings panel, until it is answered differently.
 const IMPORT_DECLINED = ["declined", "offered-again"];
 
-async function readImportPhase() {
-  const { [IMPORT_KEY]: record } = await chrome.storage.local.get(IMPORT_KEY);
-  return typeof record?.phase === "string" ? record.phase : null;
-}
 
 // Whether this browser works with the connected account: a token is stored
 // and the import question, if there is one, has been answered. Until then
@@ -153,9 +149,12 @@ export async function isAccountActive() {
 }
 
 // The user declined the import for this connection: a watch that is only in
-// this browser is set aside by watch-sync.js, never uploaded.
+// this browser is set aside by watch-sync.js, never uploaded. Not while an
+// account that did import is asked whether to import again (WD-83, the
+// question's `back`): its answer was yes, and it syncs as it did.
 export async function keepsOwnWatchesLocal() {
-  return IMPORT_DECLINED.includes(await readImportPhase());
+  const { [IMPORT_KEY]: record } = await chrome.storage.local.get(IMPORT_KEY);
+  return IMPORT_DECLINED.includes(record?.phase) && !record.back;
 }
 
 // THE way local-import.js changes the import record: in the queue a new

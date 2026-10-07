@@ -97,6 +97,16 @@ this file mirrors its must-follow rules.
   (WatchDesk decides, by `source_key`), sent once, marked "applied" only when
   WatchDesk says it was inserted, and counted as `listingsExisting`, apart
   from `listingsNew`, in all and by site.
+- **After an import, nothing in this browser is removed until the user asks
+  for it** (WD-83). The finished record is the report (by site; "Close" only
+  sets `closed`). `confirmImport()` is the one place that removes anything,
+  on the popup's second click, for the finished import of the connected
+  account only: the two `…BeforeConnect` copies when this import put all of
+  one into the account (nothing refused), and the record. Never add a key to
+  what it removes: the feed, `seenIds`, the watch and settings copies, the
+  connection, the queue and the answers are working state
+  (`docs/tickets/WD-83.md`). The extension cannot undo an import; "Import
+  again" is the alternative, and "Not now" to it is not a "no".
 - **The WatchDesk origin lives only in `config.js`** (and `manifest.json`'s
   `host_permissions`).
 - **No regression in shipped behaviour:** Open All Tabs, the settings panel,

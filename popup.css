@@ -287,8 +287,77 @@ header .tagline {
   margin-top: 3px;
 }
 
+/* The report of an import that ended (WD-83): what was added, already
+   there and left out, by site. Numbers line up on the right; the totals
+   row is set off by a rule. */
+.local-import-report {
+  margin-top: 8px;
+  overflow-x: auto;
+}
+
+.local-import-report[hidden] {
+  display: none;
+}
+
+.local-import-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.local-import-table caption {
+  margin-bottom: 4px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.local-import-table th,
+.local-import-table td {
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  vertical-align: bottom;
+  font-weight: 400;
+}
+
+.local-import-table thead th {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.local-import-table thead th[scope="colgroup"] {
+  text-align: center;
+  color: var(--text);
+}
+
+.local-import-table th[scope="row"],
+.local-import-table thead th:first-child {
+  text-align: left;
+  white-space: nowrap;
+}
+
+.local-import-table thead th[scope="colgroup"],
+.local-import-table td:nth-child(2),
+.local-import-table td:nth-child(5),
+.local-import-table thead tr:last-child th:nth-child(2),
+.local-import-table thead tr:last-child th:nth-child(5) {
+  border-left: 1px solid var(--border);
+}
+
+.local-import-table tfoot th,
+.local-import-table tfoot td {
+  border-top: 2px solid var(--border);
+  border-bottom: 0;
+  font-weight: 600;
+}
+
 .local-import-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
 }

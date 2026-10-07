@@ -171,6 +171,26 @@ Reference documents in the WatchDesk repository:
   the import sends each posting once, marks "applied" only on rows WatchDesk
   says it inserted, and counts added (`listingsNew`) apart from already there
   (`listingsExisting`), in all and by site (`counts.bySite`).
+- **After an import, nothing in this browser is removed until the user asks
+  for it, and then only the copies that import put into the account**
+  (WD-83). The finished record is the report (`counts`, with the watches by
+  site in `counts.watchesBySite`); "Close" sets `closed` and never removes
+  it. `confirmImport()` in `local-import.js` is the one place that removes
+  anything: `watchdeskWatchesBeforeConnect` when this import uploaded the
+  watches in it (`ownTakenAt`) and none was refused,
+  `watchdeskSettingsBeforeConnect` when it holds exactly the settings this
+  import saved (the record's `settings`) and none was refused, and the
+  record. A copy that holds anything the account did not get is kept. It
+  runs only for the finished import of the connected account, on the popup's
+  second click (`local-import-confirm`, naming the report by `finishedAt`),
+  never on a timer, a closed popup or another import. **Never add a key to
+  what it removes**: the feed, `seenIds`, the watch and settings copies, the
+  connection, the queue and the answers are what the extension works from
+  (the inventory is in `docs/tickets/WD-83.md`, and
+  `tests/import-confirmation.test.js` holds each of them byte for byte). The
+  extension cannot undo an import; "Import again" (`offerImportAgain()` from
+  a finished import, the record kept in `back`) is the honest alternative,
+  and a "Not now" to it is not a "no" to the account.
 - **The WatchDesk origin is named in one place:** `config.js`, plus the same
   origins in `manifest.json`'s `host_permissions`. `tests/config.test.js`
   enforces this.
@@ -192,7 +212,7 @@ Reference documents in the WatchDesk repository:
 | `account-connection.js` | Device pairing, token storage, connected state (WD-42); `captureConnection()`, the handle that binds a request to one token (WD-110), and `isCurrentConnection()` (WD-71); `isAccountActive()`, the hold on a freshly paired browser, and `changeImportRecord()` (WD-81) |
 | `watch-sync.js` | The watch list of a connected browser: sync with the account, first-connection upload, add / rename / pause / remove through the API (WD-54), adding an imported backup's watches (WD-111), and the import's watch step and the watches set aside by "Not now" (WD-81) |
 | `watch-url.js` | When two watch URLs are the same search (WD-82): `watchKey()`, the one rule that says which of the account's watches a watch of this browser becomes |
-| `local-import.js` | The import of a browser's own watches, feed and settings into an account it has just been connected to (WD-81): deciding whether to ask, the user's answer, and the resumable upload (watches, listings, applied marks, settings); what the account already had is skipped and counted apart from what was added, by site too (WD-82) |
+| `local-import.js` | The import of a browser's own watches, feed and settings into an account it has just been connected to (WD-81): deciding whether to ask, the user's answer, and the resumable upload (watches, listings, applied marks, settings); what the account already had is skipped and counted apart from what was added, by site too (WD-82); the finished record as the report, and `confirmImport()`, the one place that removes the copies kept from before an import (WD-83) |
 | `watcher-state.js` | Whether the periodic check is running or paused, kept in this browser, and reporting it to the connected account's settings (WD-71) |
 | `account-settings.js` | The settings of a connected browser (WD-79): the last-synced copy the check cycle reads, loading and saving them through the API, the settings kept from before connecting, and `changeAccountSettings()`, the one read-modify-write every PUT of the account's settings goes through; a keyword-filter change applied to the account's current filter (`saveAccountTitleFilter()`, WD-80) |
 | `settings-limits.js` | What WatchDesk accepts for a setting, copied from its `lib/settings.ts` and `lib/validation/settings.ts` (WD-79) |
@@ -200,7 +220,7 @@ Reference documents in the WatchDesk repository:
 | `popup.html` / `popup.css` / `popup.js` | The popup |
 | `popup-watcher.js` | The popup's Start Watching / Pause Watching control (WD-71) |
 | `popup-account.js` | The popup's account card (WD-42): the one status area, titled with the connected account's email, "Connecting…" until WatchDesk has named it, or "Not connected" (WD-73) |
-| `popup-local-import.js` | The popup's "Import your existing data" card (WD-81): the question, the progress, how it ended, and the settings panel's way back to it after "Not now" |
+| `popup-local-import.js` | The popup's "Import your existing data" card (WD-81): the question, the progress, how it ended, and the settings panel's way back to it after "Not now"; the report by site, its way back after "Close", and the two steps that remove the earlier copies (WD-83) |
 | `listing-ingest.js` | Posts each check cycle's listings to the connected account, after the cycle; records the last success for the popup (WD-59); queues what could not be sent and retries it on the next cycle (WD-60); queues a cycle before sending it, gives up on a batch WatchDesk will not take, and binds every request to the cycle's connection (WD-110) |
 | `popup-watch-sync.js` | The sync line inside the account card (WD-73): "Last synced Xm ago" (the later of the watch sync and the listing upload) and, as the live region, how many listings are waiting, offline, a refused account (403), dropped listings (WD-54, WD-59, WD-60), a watcher state WatchDesk has not been given yet (WD-71); and the refused-change message above the watch list (WD-54) |
 | `sites.js`, `content-*.js`, `offscreen.*`, `sounds.js` | Site adapters, tab readers, HTML parsing, alert tones |

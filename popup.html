@@ -46,16 +46,27 @@
          popup-local-import.js: the question, the progress while it runs, and
          how it ended. Hidden while there is nothing to say. The text is a
          polite live region, like the account title; the popup's one
-         role="status" stays the sync line (WD-73). -->
+         role="status" stays the sync line (WD-73).
+         WD-83: how it ended is a report, with a table by site that
+         popup-local-import.js builds in #local-import-report. Nothing this
+         browser keeps is removed until "Remove the earlier copies…" and then
+         "Remove the copies" are pressed; the buttons are in the order the
+         focus looks for one in, so neither of those two is the one it is
+         handed to. -->
     <section id="local-import" class="local-import" aria-labelledby="local-import-title" tabindex="-1" hidden>
       <h2 id="local-import-title" class="local-import-title"></h2>
       <p id="local-import-text" class="local-import-text" aria-live="polite"></p>
+      <div id="local-import-report" class="local-import-report" hidden></div>
       <ul id="local-import-details" class="local-import-details"></ul>
       <div class="local-import-actions">
         <button id="local-import-accept" type="button" hidden>Import</button>
         <button id="local-import-decline" type="button" class="secondary" hidden>Not now</button>
         <button id="local-import-retry" type="button" hidden>Retry now</button>
         <button id="local-import-dismiss" type="button" class="secondary" hidden>Close</button>
+        <button id="local-import-redo" type="button" class="secondary" hidden>Import again…</button>
+        <button id="local-import-confirm" type="button" class="secondary" hidden>Remove the earlier copies…</button>
+        <button id="local-import-keep" type="button" class="secondary" hidden>Keep them</button>
+        <button id="local-import-remove" type="button" class="secondary danger-hover" hidden>Remove the copies</button>
       </div>
     </section>
 
@@ -151,6 +162,16 @@
           Import this browser's data into your account…
         </button>
         <p class="hint" id="local-import-again-hint"></p>
+      </div>
+
+      <!-- The way back to the report of an import that ended, after "Close"
+           (WD-83). Shown by popup-local-import.js until the user has removed
+           the report. -->
+      <div id="local-import-review-group" class="settings-group" hidden>
+        <button id="local-import-review" type="button" class="secondary settings-full-width-btn">
+          Show what the import did…
+        </button>
+        <p class="hint" id="local-import-review-hint"></p>
       </div>
 
       <div class="settings-group">

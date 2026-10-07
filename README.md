@@ -260,6 +260,25 @@ kept); an "applied" mark is not added to a listing the account already had;
 "read" marks stay in this browser; and a feed entry whose watch you have
 since removed is not uploaded.
 
+**After the import** the card is a report: for LinkedIn, Glassdoor, Upwork
+and OnlineJobs.ph, how many watches and listings were added, were already in
+your account, or were left out (and why), with totals; then what became of
+your "applied" marks and your settings. **Close** only puts the report away;
+**Settings → Show what the import did…** brings it back.
+
+Nothing in this browser is removed by the import. Your feed stays where it
+is, and the extension keeps a copy of the settings (and, after a "Not now",
+the watches) it had before it was connected. If the import looks wrong you
+can leave everything as it is, or press **Import again…**: what the account
+already has is not added twice. The extension cannot undo an import or
+delete anything from your account; that is done on WatchDesk.
+
+When you are satisfied, **Remove the earlier copies…** says exactly what it
+would remove, and **Remove the copies** then removes it: only the copies
+this import put into your account in full, and the report. A copy holding
+anything WatchDesk refused is kept. The feed, the watch list, the settings
+and everything else the extension works from are never touched by it.
+
 **Developers:** the WatchDesk origin is set in `config.js`. To use a local
 WatchDesk on `http://localhost:3000`, set `WATCHDESK_ENV` to `"development"`
 there and reload the extension. Tests: `npm ci && npm test` (see CLAUDE.md).

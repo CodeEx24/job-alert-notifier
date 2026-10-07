@@ -15,8 +15,10 @@
 //   offered     the popup is showing the question. Nothing is uploaded and
 //               nothing is lost, however long it stays unanswered.
 //   importing   the user said yes: the steps below, resumable.
-//   done        the import ended; the popup shows what happened until the
-//               user closes the card.
+//   done        the import ended; the popup shows what happened, by site
+//               (WD-83). "Close" only puts the report away (`closed`): the
+//               settings panel shows it again. It stays until the user
+//               confirms it, see "After the import" below.
 //   declined    the user said no. The account is synced as it is; a watch
 //               that is only in this browser is set aside by watch-sync.js
 //               (never uploaded, never deleted), and the settings panel
@@ -54,6 +56,25 @@
 // will not take, an applied mark on a listing the account already had.
 // Nothing is ever removed from this browser.
 //
+// After the import (WD-83): the import itself still removes nothing, and
+// neither does closing the report, a timer, a disconnection or another
+// import. Only confirmImport(), the user's explicit "remove the earlier
+// copies", does, and only this:
+//   - watchdeskWatchesBeforeConnect, when this import is the one that
+//     uploaded the watches in it (an import asked for after a "no", which
+//     read them at `ownTakenAt`) and WatchDesk refused none of them;
+//   - watchdeskSettingsBeforeConnect, when it holds exactly the settings
+//     this import saved (the record's `settings`) and WatchDesk refused none;
+//   - the finished record, which is the report.
+// A copy that holds anything the account did not get is kept, and so is
+// everything the extension works from (the feed, the seen postings, the
+// watch list, the settings, the connection, the queue): docs/tickets/WD-83.md
+// lists every key. It acts only on the finished import of the account that
+// is connected. An import that looked wrong can be run again
+// (offerImportAgain, from the report): the question is asked as after a
+// "no", and "Not now" there goes back to the report (`back`). The extension
+// cannot undo an import: no route deletes a listing.
+//
 // What the account already has (WD-82) is never doubled and never replaced:
 //   - a watch that is the same search as one of the account's becomes that
 //     watch, which keeps its label, its paused state and its URL. How many
@@ -88,6 +109,9 @@
 //       marks     WatchDesk's ids of the listings still to mark applied
 //       counts    what was done and what was left out (the result)
 //       problem   { kind, message } while the import is stopped, else null
+//       ownTakenAt  when the watches in `own` were set aside (WD-83)
+//     When done: { phase, owner, again, finishedAt, counts, settings,
+//       ownTakenAt, closed }.
 //     Every write goes through account-connection.js's changeImportRecord(),
 //     the queue a new token is stored in, and only while the record is still
 //     this import's: a pairing that completes ends it.
@@ -107,6 +131,7 @@
 import {
   captureConnection,
   changeImportRecord,
+  getAccountOwner,
   isConnected,
   isCurrentConnection,
   IMPORT_KEY,
@@ -211,7 +236,29 @@ const emptyCounts = () => ({
   settingsSaved: [],
   settingsRefused: [],
   bySite: {},
+  watchesBySite: {},
 });
+
+// What became of this browser's watches, for each site (WD-83; in all, the
+// three counts of the same names above).
+const emptyWatchCounts = () => ({ watchesUploaded: 0, watchesMatched: 0, watchesRefused: 0 });
+
+// `held` with one run of the watch step (uploadOwnWatches' bySite) added.
+// Like the counts in all: uploaded and matched add up over the runs of an
+// import; refused is the number the last run found, not an addition to it.
+function withWatchSites(held, bySite) {
+  const next = {};
+  for (const site of new Set([...Object.keys(held || {}), ...Object.keys(bySite || {})])) {
+    const before = { ...emptyWatchCounts(), ...held?.[site] };
+    const run = bySite?.[site] || {};
+    next[site] = {
+      watchesUploaded: before.watchesUploaded + (run.created || 0),
+      watchesMatched: before.watchesMatched + (run.matched || 0),
+      watchesRefused: run.rejected || 0,
+    };
+  }
+  return next;
+}
 
 // The site a count is kept under when an entry names none.
 const OTHER_SITE = "other";
@@ -272,6 +319,52 @@ async function setAsideData() {
   };
 }
 
+// ---------- the copies from before the import (WD-83) ----------
+
+// Equal whatever order the keys are in.
+function ordered(value) {
+  if (Array.isArray(value)) return value.map(ordered);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, ordered(value[key])]),
+  );
+}
+const same = (a, b) => JSON.stringify(ordered(a)) === JSON.stringify(ordered(b));
+
+// What this browser keeps from before it worked with the account, beside a
+// finished import `record`: { watches, watchesRemovable, settings,
+// settingsRemovable }. `watches` is how many watches are set aside and
+// `settings` the names of the settings kept. A copy is removable, by
+// confirmImport() and nothing else, only when this import put all of it into
+// the account: it is the copy the import read, and WatchDesk refused nothing
+// of it. One that holds anything else is somebody's only copy and stays.
+async function safetyCopies(record) {
+  const stored = await chrome.storage.local.get([WATCHES_SNAPSHOT_KEY, SETTINGS_SNAPSHOT_KEY]);
+  const counts = { ...emptyCounts(), ...record.counts };
+  const watchCopy = stored[WATCHES_SNAPSHOT_KEY];
+  const kept = storedSettings(stored[SETTINGS_SNAPSHOT_KEY]?.settings);
+  const watches = (await getSetAsideWatches()).length;
+  const settings = Object.keys(kept);
+  return {
+    watches,
+    watchesRemovable:
+      watches > 0 &&
+      // Set only by an import that uploaded watches that had been set aside.
+      Number.isFinite(record.ownTakenAt) &&
+      watchCopy.takenAt === record.ownTakenAt &&
+      counts.watchesRefused === 0,
+    settings,
+    settingsRemovable:
+      settings.length > 0 &&
+      Boolean(record.settings) &&
+      typeof record.settings === "object" &&
+      same(kept, record.settings) &&
+      counts.settingsRefused.length === 0,
+  };
+}
+
 // ---------- what the popup sees ----------
 
 // Null when there is nothing to show (no account connected, or no record),
@@ -279,11 +372,18 @@ async function setAsideData() {
 //   { phase: "checking" }  just paired, not yet settled
 //   { phase: "offered", again, watches, listings, settings }
 //       what saying yes would upload: two counts and whether there are
-//       settings. `again` is the offer made from the settings panel.
+//       settings. `again` is the offer made from the settings panel, or
+//       (with `redo: true`, WD-83) from the report of an import that ended.
 //   { phase: "importing", step, listingsDone, listingsTotal, appliedDone,
 //     appliedTotal, problem, counts }
 //       `problem` is { message, retryAt } while the import is stopped.
-//   { phase: "done", counts }
+//   { phase: "done", closed, finishedAt, counts, listingsHere, copies,
+//     confirmable, redo }
+//       WD-83. `closed`: the report was put away (the settings panel shows
+//       it again). `listingsHere`: the feed entries this browser still has.
+//       `copies`: what it keeps from before (safetyCopies). `confirmable`:
+//       the connected account is the import's, so its copies may be removed.
+//       `redo`: there is something an import could send again.
 //   { phase: "declined", available, watches, listings, settings }
 //       `available`: there is something an import could still upload.
 // No token, no listing, no watch URL.
@@ -303,6 +403,7 @@ export async function getImportStatus() {
         watches: data.watches,
         listings: data.listings,
         settings: Object.keys(data.settings).length > 0,
+        ...(record.back ? { redo: true } : {}),
       };
     }
     case "importing": {
@@ -319,8 +420,19 @@ export async function getImportStatus() {
         counts: { ...emptyCounts(), ...record.counts },
       };
     }
-    case "done":
-      return { phase: "done", counts: { ...emptyCounts(), ...record.counts } };
+    case "done": {
+      const owner = await getAccountOwner();
+      return {
+        phase: "done",
+        closed: record.closed === true,
+        finishedAt: Number.isFinite(record.finishedAt) ? record.finishedAt : null,
+        counts: { ...emptyCounts(), ...record.counts },
+        listingsHere: (await feedEntries()).length,
+        copies: await safetyCopies(record),
+        confirmable: Boolean(owner) && owner === record.owner,
+        redo: (await setAsideData()).exists,
+      };
+    }
     case "declined": {
       const data = await setAsideData();
       return {
@@ -446,6 +558,9 @@ export async function acceptImport() {
   if (record?.phase === "offered" || record?.phase === "offered-again") {
     const again = record.phase === "offered-again";
     const data = again ? await setAsideData() : await ownData();
+    // WD-83: which copy of the set-aside watches this import uploads.
+    const { [WATCHES_SNAPSHOT_KEY]: watchCopy } = await chrome.storage.local.get(WATCHES_SNAPSHOT_KEY);
+    const ownTakenAt = again && data.own.length > 0 && Number.isFinite(watchCopy?.takenAt) ? watchCopy.takenAt : null;
     const connection = await captureConnection();
     let accepted = false;
     await changeImportRecord(async (stored) => {
@@ -460,6 +575,7 @@ export async function acceptImport() {
         startedAt: Date.now(),
         step: "watches",
         own: again ? data.own : [],
+        ownTakenAt,
         settings: data.settings,
         sent: [],
         marks: [],
@@ -490,6 +606,9 @@ export async function declineImport() {
     let declined = false;
     await changeImportRecord((stored) => {
       if (stored?.phase !== record.phase || stored.owner !== record.owner) return undefined;
+      // WD-83: asked from the report of an import that ended, "Not now" goes
+      // back to that report. The account's answer stays yes.
+      if (stored.back) return { ...stored.back, closed: false };
       declined = true;
       return { phase: "declined", owner: stored.owner };
     });
@@ -501,11 +620,19 @@ export async function declineImport() {
 // The settings panel's "Import…" after an earlier "no": asks again, about
 // what was set aside. The browser goes on working with the account while
 // the question is open.
+// WD-83: also the report's "Import again", for an import that looked wrong.
+// The same question, about the same things; the report is kept in `back`
+// for a "Not now". Only for the account the import was for.
 export async function offerImportAgain() {
   if ((await setAsideData()).exists) {
-    await changeImportRecord((stored) =>
-      stored?.phase === "declined" ? { phase: "offered-again", owner: stored.owner } : undefined,
-    );
+    const owner = await getAccountOwner();
+    await changeImportRecord((stored) => {
+      if (stored?.phase === "declined") return { phase: "offered-again", owner: stored.owner };
+      if (stored?.phase === "done" && owner && owner === stored.owner) {
+        return { phase: "offered-again", owner: stored.owner, back: stored };
+      }
+      return undefined;
+    });
   }
   return getImportStatus();
 }
@@ -528,10 +655,47 @@ export async function resetImport() {
   await chrome.alarms.clear(IMPORT_ALARM);
 }
 
-// The user has read how the import ended.
+// "Close": the report is put away, not removed (WD-83). Nothing else
+// changes; the settings panel shows it again.
 export async function dismissImport() {
-  await changeImportRecord((stored) => (stored?.phase === "done" ? null : undefined));
+  await changeImportRecord((stored) => (stored?.phase === "done" ? { ...stored, closed: true } : undefined));
   return getImportStatus();
+}
+
+// The settings panel's way back to the report.
+export async function reviewImport() {
+  await changeImportRecord((stored) => (stored?.phase === "done" ? { ...stored, closed: false } : undefined));
+  return getImportStatus();
+}
+
+// The user has checked the report and asked for the earlier copies to be
+// removed (WD-83): the one place anything of this browser's is removed after
+// an import. `finishedAt` names the report the user was looking at; a
+// different one, an import that is not finished, no account, or an account
+// that is not the import's removes nothing. Removes the copies this import
+// put into the account in full (safetyCopies) and the report itself, in the
+// queue a new token is stored in, so a pairing cannot come between the
+// check and the removal. Resolves to what was removed, { watches, settings },
+// or null when nothing was.
+export async function confirmImport(finishedAt) {
+  const connection = await captureConnection();
+  let removed = null;
+  await changeImportRecord(async (stored) => {
+    if (stored?.phase !== "done" || !Number.isFinite(finishedAt) || stored.finishedAt !== finishedAt) return undefined;
+    if (!connection?.owner || connection.owner !== stored.owner || !(await isCurrentConnection(connection))) return undefined;
+    const copies = await safetyCopies(stored);
+    const keys = [
+      ...(copies.watchesRemovable ? [WATCHES_SNAPSHOT_KEY] : []),
+      ...(copies.settingsRemovable ? [SETTINGS_SNAPSHOT_KEY] : []),
+    ];
+    if (keys.length > 0) await chrome.storage.local.remove(keys);
+    removed = {
+      watches: copies.watchesRemovable ? copies.watches : 0,
+      settings: copies.settingsRemovable ? copies.settings : [],
+    };
+    return null;
+  });
+  return removed;
 }
 
 // ---------- the import ----------
@@ -611,6 +775,8 @@ async function importWatches(run) {
     // The watches WatchDesk refused stay in this browser and are named by
     // every sync, so this is their number, not an addition to it.
     watchesRefused: result.rejected,
+    // WD-83: the same three, for each site.
+    watchesBySite: withWatchSites(run.record.counts.watchesBySite, result.bySite),
   };
   if (result.waiting > 0) {
     // Some went up before WatchDesk stopped taking them. The rest are still
@@ -859,7 +1025,17 @@ async function runSteps(force) {
     await changeImportRecord((stored) => {
       if (stored?.phase !== "importing" || stored.owner !== owner || stored.startedAt !== startedAt) return undefined;
       finished = true;
-      return { phase: "done", owner, again: Boolean(stored.again), finishedAt: Date.now(), counts };
+      return {
+        phase: "done",
+        owner,
+        again: Boolean(stored.again),
+        finishedAt: Date.now(),
+        counts,
+        // WD-83: what this import saved and which set-aside watches it
+        // uploaded, so that confirmImport() can tell its own copies.
+        settings: stored.settings && typeof stored.settings === "object" ? stored.settings : {},
+        ownTakenAt: stored.ownTakenAt ?? null,
+      };
     });
     if (!finished) return;
     await forgetInterrupted(owner);

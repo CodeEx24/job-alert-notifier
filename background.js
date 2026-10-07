@@ -80,6 +80,8 @@ import {
   declineImport,
   offerImportAgain,
   dismissImport,
+  reviewImport,
+  confirmImport,
   resetImport,
   runImport,
 } from "./local-import.js";
@@ -1425,6 +1427,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case "local-import-dismiss": {
         await dismissImport();
         sendResponse(await getPopupState());
+        break;
+      }
+      // WD-83: the report of an import that ended. "Close" above only puts
+      // it away; this shows it again from the settings panel.
+      case "local-import-review": {
+        await reviewImport();
+        sendResponse(await getPopupState());
+        break;
+      }
+      // WD-83: the user has checked the report and asked for the copies
+      // this browser kept from before the import to be removed. The one
+      // message that removes any of them; `finishedAt` names the report the
+      // popup was showing. Answered with what was removed (or null), for the
+      // popup to say.
+      case "local-import-confirm": {
+        const removed = await confirmImport(message.finishedAt);
+        sendResponse({ ...(await getPopupState()), localImportConfirmed: removed });
         break;
       }
       case "set-watcher-state": {

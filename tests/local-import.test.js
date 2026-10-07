@@ -334,14 +334,26 @@ describe("Import", () => {
         appliedNotCarried: 0,
         settingsSaved: ["intervalMinutes", "soundId"],
         settingsRefused: [],
+        // WD-83: the watches by site too.
+        watchesBySite: {
+          onlinejobsph: { watchesUploaded: 1, watchesMatched: 0, watchesRefused: 0 },
+          glassdoor: { watchesUploaded: 1, watchesMatched: 0, watchesRefused: 0 },
+          linkedin: { watchesUploaded: 2, watchesMatched: 0, watchesRefused: 0 },
+          upwork: { watchesUploaded: 1, watchesMatched: 0, watchesRefused: 0 },
+        },
       },
+      // WD-83: what it saved, so that the copy of exactly these settings can
+      // be told from any other; no watches had been set aside.
+      settings: { intervalMinutes: 30, soundId: "alert" },
+      ownTakenAt: null,
     });
     expect(answers()).toEqual({ [ADA]: "accepted" });
     expect(await ext.chrome.alarms.get(IMPORT_ALARM)).toBeUndefined();
     expect(JSON.stringify(ext.local()[IMPORT_KEY])).not.toContain(TEST_TOKEN);
 
-    // The card is closed; the browser is an ordinary connected one.
-    expect((await ext.send({ type: "local-import-dismiss" })).localImport).toBeNull();
+    // The card is closed (WD-83: put away, not removed); the browser is an
+    // ordinary connected one.
+    expect((await ext.send({ type: "local-import-dismiss" })).localImport).toMatchObject({ phase: "done", closed: true });
     expect((await ext.send({ type: "get-state" })).watchSync).toMatchObject({ mode: "account", localOnly: 0 });
   });
 
