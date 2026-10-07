@@ -487,6 +487,15 @@ export const INGEST_MAX_LISTINGS = 200;
 // request goes out with that connection's token only; if it is no longer
 // the stored one, nothing is sent and the answer is
 // { kind: "connection-changed" }.
+//
+// WD-117: a listing may carry `detectedAt`, when it was first found, as an
+// ISO 8601 string. Only the import of a browser's own feed sends one
+// (local-import.js); a check cycle never does. WatchDesk then says what
+// became of each time, and the answer has
+//   detectedTimes: [{ jobId, detectedAt, outcome }]
+// with `outcome` "used", "out-of-range" (stored with WatchDesk's own clock)
+// or "kept" (the account already had the listing). The key is there only
+// when WatchDesk sent it, so the answer to a check is what it always was.
 export async function ingestListings(watchId, listings, connection) {
   const response = await authorizedRequest("/api/listings/ingest", {
     method: "POST",
@@ -501,6 +510,13 @@ export async function ingestListings(watchId, listings, connection) {
     kind: "ok",
     received: typeof response.body?.received === "number" ? response.body.received : listings.length,
     inserted: inserted.filter((row) => typeof row?.id === "string" && typeof row?.jobId === "string"),
+    ...(Array.isArray(response.body?.detectedTimes)
+      ? {
+          detectedTimes: response.body.detectedTimes.filter(
+            (row) => typeof row?.jobId === "string" && typeof row?.outcome === "string",
+          ),
+        }
+      : {}),
   };
 }
 

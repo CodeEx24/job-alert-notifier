@@ -586,6 +586,46 @@ describe("ingestListings (WD-57's route)", () => {
     });
   });
 
+  // WD-117: the import's requests say when a listing was found, and the
+  // answer says what became of each time.
+  it("sends a listing's detectedAt as it was given, and reads what WatchDesk says became of each time", async () => {
+    const times = [
+      { jobId: "401", detectedAt: "2026-09-07T08:15:30.123Z", outcome: "used" },
+      { jobId: "402", detectedAt: "2026-10-07T01:02:03.456Z", outcome: "kept" },
+      { jobId: "403", detectedAt: "2026-10-07T09:00:00.000Z", outcome: "out-of-range" },
+    ];
+    fetchMock.mockResolvedValue(json(200, { ...ANSWER, detectedTimes: times }));
+    const dated = { ...LISTING, detectedAt: "2026-09-07T08:15:30.123Z" };
+    expect(await ingestListings(WATCH_ID, [dated])).toEqual({
+      kind: "ok",
+      received: 1,
+      inserted: [{ id: "listing-1", jobId: "401" }],
+      detectedTimes: times,
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ watchId: WATCH_ID, listings: [dated] });
+  });
+
+  it("an answer without detectedTimes has no such key, so the answer to a check is what it always was", async () => {
+    fetchMock.mockResolvedValue(json(200, ANSWER));
+    expect(await ingestListings(WATCH_ID, [LISTING])).not.toHaveProperty("detectedTimes");
+    for (const odd of [null, "used", 3, { jobId: "401", outcome: "used" }]) {
+      fetchMock.mockResolvedValue(json(200, { ...ANSWER, detectedTimes: odd }));
+      expect(await ingestListings(WATCH_ID, [LISTING])).not.toHaveProperty("detectedTimes");
+    }
+  });
+
+  it("keeps an outcome it does not know, and drops what is not an entry", async () => {
+    fetchMock.mockResolvedValue(
+      json(200, {
+        ...ANSWER,
+        detectedTimes: [null, "x", { jobId: 401, outcome: "used" }, { jobId: "401" }, { jobId: "401", outcome: "postdated" }],
+      }),
+    );
+    expect((await ingestListings(WATCH_ID, [LISTING])).detectedTimes).toEqual([{ jobId: "401", outcome: "postdated" }]);
+    fetchMock.mockResolvedValue(json(200, { ...ANSWER, detectedTimes: [] }));
+    expect((await ingestListings(WATCH_ID, [LISTING])).detectedTimes).toEqual([]);
+  });
+
   it("is retried on a network error, a 5xx and a 429, because WatchDesk dedupes repeats", async () => {
     noWait();
     fetchMock

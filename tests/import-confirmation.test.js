@@ -1038,7 +1038,7 @@ describe("when the import looked wrong: import again", () => {
     expect(details()).toEqual([
       "What your account already has is not added twice, so importing again can only add what the first import missed.",
       "Your settings from before this browser was connected replace the account's.",
-      "Imported listings will be dated the day of the import on WatchDesk, not the day this browser found them. The date each job was posted is kept.",
+      "Imported listings keep the date this browser found them. One your account already has keeps the date it has there.",
       "Not now goes back to the report and changes nothing.",
     ]);
     expect(shownButtons()).toEqual(["Import", "Not now"]);

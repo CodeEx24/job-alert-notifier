@@ -45,7 +45,9 @@
 //                listing-ingest.js's retry queue, whose cap drops the oldest.
 //                WatchDesk keeps one row per posting however often it is
 //                sent. A request it refuses (400) is halved until the one
-//                listing it will not take is found and left out.
+//                listing it will not take is found and left out. Each
+//                listing says when this browser first found it (WD-117), so
+//                a listing that is new to the account keeps that date.
 //   3. applied   an "applied" mark, for the listings this import added
 //                (WatchDesk names only those): PATCH /api/listings/[id].
 //   4. settings  the settings the user had chosen here, through
@@ -89,6 +91,17 @@
 //     the ones sent, and a salary or workplace type it lacked is filled in;
 //   - a posting this browser holds under two watches is sent once, for the
 //     watch that found it first, and counted once as new.
+//
+// The date a listing was found (WD-117): a feed entry's detectedAt goes with
+// its listing as an ISO 8601 string, here and nowhere else (a check cycle
+// and its retry queue send none: what a check finds, it finds now). It is
+// read from the stored entry every time, so a request sent again after a
+// stop says the same. An entry that holds no time that can be sent sends no
+// field at all, never a bad one, which would refuse the whole request.
+// WatchDesk uses the time only for a listing the request adds and only
+// within its own limits; one it does not use is dated the day of the import
+// and counted (listingsDatedToday). Nothing the import adds is announced:
+// no notification, tone or badge comes from here.
 //
 // WatchDesk allows 120 requests a minute per device, shared with the check
 // cycle: requests go out one at a time, IMPORT_REQUEST_GAP_MS apart. When
@@ -210,6 +223,10 @@ async function forgetInterrupted(owner) {
 //   listingsInvalid    not a posting WatchDesk could store
 // listingsUploaded is listingsNew + listingsExisting: what WatchDesk answered
 // for.
+// Beside them, and in all only (WD-117): listingsDatedToday, how many of
+// listingsNew are dated the day of the import because this browser had no
+// time for them that WatchDesk took. Absent while there is none, as in a
+// record from before it was counted.
 const emptySiteCounts = () => ({
   listingsNew: 0,
   listingsExisting: 0,
@@ -803,6 +820,23 @@ function jobIdOf(entry) {
 const siteOfEntry = (entry) =>
   entry.siteId || (typeof entry.sourceKey === "string" ? entry.sourceKey.split(":")[0] : "") || null;
 
+// The form WatchDesk takes a time in: "2026-09-30T08:15:30.123Z".
+const ISO_LENGTH = 24;
+
+// When this browser first found an entry's posting (WD-117), as { at, iso }:
+// the feed's epoch milliseconds, and the string WatchDesk is sent. Null when
+// the entry holds no time that can be sent: none, not a number, not finite,
+// zero or negative, or beyond what a Date holds or writes with a four-digit
+// year. Whether a time is too old or in the future is WatchDesk's to say.
+function foundAt(entry) {
+  const at = entry.detectedAt;
+  if (typeof at !== "number" || !Number.isFinite(at) || at <= 0) return null;
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return null;
+  const iso = date.toISOString();
+  return iso.length === ISO_LENGTH ? { at, iso } : null;
+}
+
 // The feed entries still to send, as { groups, pending, leftOut }: `groups`
 // is watch id -> the postings to send for it, each { listing, keys, applied,
 // site }. A posting is named as WatchDesk names it, by its watch's site and
@@ -813,7 +847,8 @@ const siteOfEntry = (entry) =>
 // watch is not on WatchDesk (removed here since, or refused there) or is on
 // another site than the entry — a listing's site comes from its watch, so it
 // would be filed as a different posting — and an entry WatchDesk could not
-// store.
+// store. A listing carries the time its entry was found, when it has one
+// (foundAt).
 async function planListings(run) {
   const serverIds = new Set(await getServerWatchIds());
   const { watches } = await chrome.storage.sync.get("watches");
@@ -829,8 +864,8 @@ async function planListings(run) {
     if (key && sent.has(key)) continue;
     const site = siteOfWatch.get(entry.watchId);
     const entrySite = siteOfEntry(entry);
-    const listing = key ? toListing({ ...entry, id: jobIdOf(entry) }) : null;
-    if (!listing) {
+    const stored = key ? toListing({ ...entry, id: jobIdOf(entry) }) : null;
+    if (!stored) {
       tally(leftOut, entrySite || site || OTHER_SITE, "listingsInvalid", 1);
       continue;
     }
@@ -840,8 +875,10 @@ async function planListings(run) {
     }
     pending += 1;
     const postingSite = site || entrySite || OTHER_SITE;
-    const posting = `${postingSite}:${listing.id}`;
-    const found = Number.isFinite(entry.detectedAt) ? entry.detectedAt : Infinity;
+    const posting = `${postingSite}:${stored.id}`;
+    const when = foundAt(entry);
+    const listing = when ? { ...stored, detectedAt: when.iso } : stored;
+    const found = when ? when.at : Infinity;
     const held = postings.get(posting);
     if (!held) {
       postings.set(posting, {
@@ -894,15 +931,24 @@ async function sendListings(run, watchId, items) {
     // others it already had (WD-82): skipped, with the watch and the status
     // they have there.
     const added = new Map(result.inserted.map((row) => [row.jobId, row.id]));
+    // WD-117: the times WatchDesk says it did not use for a listing it added.
+    // An answer without them, or with an outcome this code does not know,
+    // names none.
+    const undated = new Set(
+      (result.detectedTimes || []).filter((time) => time.outcome === "out-of-range").map((time) => time.jobId),
+    );
     const marks = [...run.record.marks];
+    let datedToday = 0;
     for (const item of items) {
       const isNew = added.has(item.listing.id);
+      if (isNew && (!item.listing.detectedAt || undated.has(item.listing.id))) datedToday += 1;
       tally(counts, item.site, "listingsNew", isNew ? 1 : 0);
       tally(counts, item.site, "listingsExisting", item.keys.length - (isNew ? 1 : 0));
       if (!item.applied) continue;
       if (isNew) marks.push(added.get(item.listing.id));
       else counts.appliedNotCarried += 1;
     }
+    if (datedToday > 0) counts.listingsDatedToday = (counts.listingsDatedToday || 0) + datedToday;
     counts.listingsUploaded += entriesIn(items);
     await answered(run, items, counts, { marks });
     return false;
