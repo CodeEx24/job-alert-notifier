@@ -130,11 +130,19 @@ const ADDED_SINCE_SHIPPED = [
   ["local-import", "section"],
   ["local-import-title", "h2"],
   ["local-import-text", "p"],
+  // WD-83: the report of an import that ended, by site.
+  ["local-import-report", "div"],
   ["local-import-details", "ul"],
   ["local-import-accept", "button"],
   ["local-import-decline", "button"],
   ["local-import-retry", "button"],
   ["local-import-dismiss", "button"],
+  // WD-83: importing again, and the two steps that remove the copies this
+  // browser kept from before the import.
+  ["local-import-redo", "button"],
+  ["local-import-confirm", "button"],
+  ["local-import-keep", "button"],
+  ["local-import-remove", "button"],
   // WD-79: the line at the top of the settings panel that says where the
   // settings are saved (this browser only, or the connected account).
   ["settings-sync-note", "p"],
@@ -142,6 +150,10 @@ const ADDED_SINCE_SHIPPED = [
   ["local-import-again-group", "div"],
   ["local-import-again", "button"],
   ["local-import-again-hint", "p"],
+  // WD-83: the way back to the report after "Close".
+  ["local-import-review-group", "div"],
+  ["local-import-review", "button"],
+  ["local-import-review-hint", "p"],
   // WD-111: the hint under Reset Extension. The shipped popup has the same
   // paragraph with the same words and no id; the id lets popup.js say what
   // Reset does with an account connected.
@@ -181,7 +193,24 @@ describe.skipIf(REFERENCE_ROOT)("popup.html's controls added since the shipped p
       ["local-import-decline", "button", true, null],
       ["local-import-retry", "button", true, null],
       ["local-import-dismiss", "button", true, null],
+      // WD-83: after "Close", so the focus is never handed to a button that
+      // removes something; "Keep them" before "Remove the copies".
+      ["local-import-redo", "button", true, null],
+      ["local-import-confirm", "button", true, null],
+      ["local-import-keep", "button", true, null],
+      ["local-import-remove", "button", true, null],
     ]);
+    // WD-83: the report is empty and hidden until there is one, and the
+    // way back to it is in the settings panel, after the way back to the
+    // question.
+    const report = doc.getElementById("local-import-report");
+    expect(card.contains(report)).toBe(true);
+    expect([report.hidden, report.children.length]).toEqual([true, 0]);
+    const review = doc.getElementById("local-import-review-group");
+    expect(doc.getElementById("settings-panel").contains(review)).toBe(true);
+    expect(review.hidden).toBe(true);
+    expect(doc.getElementById("local-import-again-group").compareDocumentPosition(review) & 4).toBe(4);
+    expect(review.compareDocumentPosition(doc.getElementById("reset-extension")) & 4).toBe(4);
     // Still one role="status" in the popup: the sync line (WD-73).
     expect([...doc.querySelectorAll('[role="status"]')].map((el) => el.id)).toEqual(["watch-sync-text"]);
 

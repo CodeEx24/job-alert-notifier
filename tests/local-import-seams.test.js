@@ -187,6 +187,8 @@ describe("uploadOwnWatches (the import's first step)", () => {
       rejected: 1,
       waiting: 0,
       stoppedBy: null,
+      // WD-83: the same, for each site.
+      bySite: { onlinejobsph: { created: 1, matched: 1, rejected: 1 } },
     });
     expect(storedWatches().map((w) => w.id)).toEqual([twin.id, api.watches[1].id, "w_3"]);
 
@@ -229,6 +231,7 @@ describe("uploadOwnWatches (the import's first step)", () => {
       rejected: 0,
       waiting: 2,
       stoppedBy: { kind: "rate-limited", retryAfterSeconds: 30 },
+      bySite: { onlinejobsph: { created: 1, matched: 0, rejected: 0 } },
     });
     // The two that did not go are still in this browser's list.
     expect(storedWatches().map((w) => w.id)).toEqual([api.watches[0].id, "w_2", "w_3"]);

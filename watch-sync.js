@@ -76,6 +76,7 @@ import {
 } from "./account-connection.js";
 import { listWatches, createWatch, updateWatch, deleteWatch } from "./watchdesk-api.js";
 import { watchKey } from "./watch-url.js";
+import { siteForUrl } from "./sites.js";
 
 const WATCHES_KEY = "watches";
 export const WATCHES_SNAPSHOT_KEY = "watchdeskWatchesBeforeConnect";
@@ -104,6 +105,10 @@ function withLock(fn) {
   lockTail = run.catch(() => {});
   return run;
 }
+
+// The site a watch of this browser is counted under (WD-83): the one it was
+// stored with, else the one its URL is on, else "other".
+const siteOf = (watch) => (typeof watch.siteId === "string" && watch.siteId) || siteForUrl(watch.url)?.id || "other";
 
 const strings = (value) => (Array.isArray(value) ? value.filter((v) => typeof v === "string") : []);
 
@@ -270,7 +275,9 @@ export async function getServerWatchIds() {
 // (`matched`; `differing` of them under another label or paused state than
 // they had here, which the account's replaced), were refused by WatchDesk
 // (`rejected`) or could not be sent yet (`waiting`, with `stoppedBy`, the
-// answer that ended the uploads).
+// answer that ended the uploads). `bySite` (WD-83) is the first, the second
+// and the fourth of those again, for each site: { [site id | "other"]:
+// { created, matched, rejected } }.
 async function runSync(imported, { own = [], connection } = {}) {
   if (!(await isAccountActive())) return null;
 
@@ -316,6 +323,12 @@ async function runSync(imported, { own = [], connection } = {}) {
   let differing = 0;
   let uploading = true;
   let stoppedBy = null;
+  const bySite = {};
+  const count = (watch, what) => {
+    const site = siteOf(watch);
+    bySite[site] = { created: 0, matched: 0, rejected: 0, ...bySite[site] };
+    bySite[site][what] += 1;
+  };
 
   for (const watch of copy) {
     if (onServer.has(watch.id)) continue;
@@ -329,6 +342,7 @@ async function runSync(imported, { own = [], connection } = {}) {
     const twin = byUrl.get(watch.url) || bySearch.get(watchKey(watch.url));
     if (twin) {
       idMap.set(watch.id, twin.id);
+      count(watch, "matched");
       if ((watch.label && watch.label !== twin.label) || (watch.enabled !== false) !== (twin.enabled !== false)) differing += 1;
       continue;
     }
@@ -338,6 +352,7 @@ async function runSync(imported, { own = [], connection } = {}) {
     }
     if (rejected.has(watch.id)) {
       rejectedIds.push(watch.id);
+      count(watch, "rejected");
       localOnly.push(watch);
       continue;
     }
@@ -352,6 +367,7 @@ async function runSync(imported, { own = [], connection } = {}) {
     if (result.kind === "ok") {
       created.push(result.watch);
       idMap.set(watch.id, result.watch.id);
+      count(watch, "created");
       // Another own watch that is the same search becomes this one,
       // whichever spelling of the URL (as stored here, as stored there) it
       // has.
@@ -363,8 +379,10 @@ async function runSync(imported, { own = [], connection } = {}) {
     // A 400 will be a 400 next time too. Anything else (offline, rate
     // limit, unverified email) ends the uploads for this sync; the next
     // one offers what is left again.
-    if (result.kind === "invalid") rejectedIds.push(watch.id);
-    else {
+    if (result.kind === "invalid") {
+      rejectedIds.push(watch.id);
+      count(watch, "rejected");
+    } else {
       uploading = false;
       stoppedBy = result;
     }
@@ -394,6 +412,7 @@ async function runSync(imported, { own = [], connection } = {}) {
       rejected: rejectedIds.length,
       waiting: localOnly.length - rejectedIds.length,
       stoppedBy,
+      bySite,
     },
   };
 }
@@ -588,7 +607,7 @@ export function importAccountWatches(watches) {
 // aside by an earlier "no") included, on `connection` only. Safe to repeat:
 // a watch already uploaded is matched by its id or its URL, never made
 // twice. Resolves to { ok: true, created, matched, differing, rejected,
-// waiting, stoppedBy } (see runSync), or { ok: false, kind, retryAfterSeconds?, error }
+// waiting, stoppedBy, bySite } (see runSync), or { ok: false, kind, retryAfterSeconds?, error }
 // when WatchDesk did not give the account's list and nothing was done. Never
 // throws.
 export function uploadOwnWatches(own, connection) {

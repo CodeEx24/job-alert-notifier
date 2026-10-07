@@ -1794,7 +1794,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     const account = lastState?.watchSync?.mode === "account";
     // WD-81: the watches set aside by "Not now" are this browser's own, and
     // a reset clears them like the rest of what is only here.
-    const setAside = lastState?.localImport?.phase === "declined" && lastState.localImport.watches > 0;
+    // WD-83: so are the ones an import uploaded later, kept until the user
+    // removes the copy from the import's report.
+    const kept = lastState?.localImport;
+    const setAside = (kept?.phase === "declined" && kept.watches > 0) || (kept?.phase === "done" && kept.copies?.watches > 0);
     const confirmed = confirm(
       account
         ? `Reset Job Alert Notifier? This clears the whole feed in this browser${
