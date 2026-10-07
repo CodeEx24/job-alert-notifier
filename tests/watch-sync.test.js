@@ -304,6 +304,124 @@ describe("the first sync after connecting, with watches already in this browser"
 
 });
 
+// WD-82: the rule that says which of the account's watches a watch of this
+// browser is (watch-url.js) is the one every sync uses, not only the import
+// of a browser's own data.
+describe("the same search under another spelling (WD-82)", () => {
+  beforeEach(connect);
+
+  const OJ_SPELLED = "http://onlinejobs.ph/jobseekers/jobsearch/?utm_source=mail&jobkeyword=va#top";
+  const UP_OTHER = "https://www.upwork.com/nx/search/jobs/?q=vue";
+
+  it("the first sync does not upload it: it becomes the account's watch, which is not changed", async () => {
+    const onWeb = api.addWatch({ url: OJ_SPELLED, label: "Named on the web", enabled: false });
+    const before = structuredClone(onWeb);
+    await storeWatches([local("w_1", OJ), local("w_2", UP, { siteId: "upwork" })]);
+
+    await sync.syncWatches();
+
+    expect(api.watchCalls("POST").map((r) => r.body.url)).toEqual([UP]);
+    expect(api.watchCalls().filter((r) => r.method === "PATCH" || r.method === "DELETE")).toEqual([]);
+    expect(api.watches[0]).toEqual(before);
+    // The account's version wins, its spelling of the URL included.
+    expect(storedWatches()[0]).toEqual(stored(onWeb));
+    expect(storedWatches()).toHaveLength(2);
+  });
+
+  it("a search that differs in one value is another watch, and is uploaded", async () => {
+    api.addWatch({ url: UP_OTHER });
+    await storeWatches([local("w_1", UP, { siteId: "upwork" })]);
+
+    await sync.syncWatches();
+
+    expect(api.watchCalls("POST").map((r) => r.body.url)).toEqual([UP]);
+    expect(api.watches.map((w) => w.url)).toEqual([UP_OTHER, UP]);
+  });
+
+  it("two local watches that are the same search are uploaded once", async () => {
+    await storeWatches([local("w_1", OJ), local("w_2", OJ_SPELLED)]);
+    await sync.syncWatches();
+    expect(api.watchCalls("POST").map((r) => r.body.url)).toEqual([OJ]);
+    expect(storedWatches()).toEqual(api.watches.map(stored));
+  });
+
+  it("takes the account's watch spelled the same when there is one, else the oldest, and the same one every time", async () => {
+    const older = api.addWatch({ url: OJ_SPELLED, label: "Older" });
+    const exact = api.addWatch({ url: OJ, label: "Exact" });
+    api.addWatch({ url: `${UP}#a`, label: "Older Upwork" });
+    api.addWatch({ url: `${UP}&utm_source=x`, label: "Newer Upwork" });
+    await storeWatches([local("w_1", OJ), local("w_2", UP, { siteId: "upwork" })]);
+    await env.chrome.storage.local.set({ seenIds: { w_1: ["a"], w_2: ["b"] } });
+
+    await sync.syncWatches();
+
+    expect(api.watchCalls("POST")).toEqual([]);
+    expect(env.chrome.storage.local.dump().seenIds).toEqual({ [exact.id]: ["a"], [api.watches[2].id]: ["b"] });
+    // Nothing of the account's is merged or removed: all four are still
+    // there, and are this browser's list.
+    expect(storedWatches()).toEqual(api.watches.map(stored));
+    expect(api.watches).toHaveLength(4);
+    expect(older.label).toBe("Older");
+
+    await sync.syncWatches();
+    expect(api.watchCalls().every((r) => r.method === "GET")).toBe(true);
+    expect(storedWatches()).toEqual(api.watches.map(stored));
+  });
+
+  it("never merges two watches the account itself holds, however alike", async () => {
+    api.addWatch({ url: OJ });
+    api.addWatch({ url: OJ });
+    api.addWatch({ url: OJ_SPELLED });
+
+    await sync.syncWatches();
+    await sync.syncWatches();
+
+    expect(api.watches).toHaveLength(3);
+    expect(storedWatches()).toEqual(api.watches.map(stored));
+    expect(api.watchCalls().every((r) => r.method === "GET")).toBe(true);
+  });
+
+  it("a watch that becomes one this browser already checks adds what it had seen to it", async () => {
+    const onWeb = api.addWatch({ url: OJ });
+    await sync.syncWatches();
+    await env.chrome.storage.local.set({
+      seenIds: { [onWeb.id]: ["job-1", "job-2"], w_own: ["job-2", "job-3"] },
+      lastChecked: { [onWeb.id]: 1700000000000, w_own: 1600000000000 },
+      feed: [{ id: "w_own:job-3", watchId: "w_own", title: "A job" }],
+    });
+
+    // A backup file brings the same search back under a local id.
+    expect(await sync.importAccountWatches([stored(onWeb), local("w_own", OJ_SPELLED)])).toEqual({ ok: true });
+
+    expect(api.watchCalls("POST")).toEqual([]);
+    const run = env.chrome.storage.local.dump();
+    expect(run.seenIds).toEqual({ [onWeb.id]: ["job-1", "job-2", "job-3"] });
+    // The rest of the run state is the watch's that was already checked.
+    expect(run.lastChecked).toEqual({ [onWeb.id]: 1700000000000 });
+    expect(run.feed).toEqual([{ id: "w_own:job-3", watchId: onWeb.id, title: "A job" }]);
+  });
+
+  it("a backup file's watch is matched the same way", async () => {
+    const onWeb = api.addWatch({ url: OJ_SPELLED, label: "On the web" });
+    await sync.syncWatches();
+
+    expect(await sync.importAccountWatches([local("w_1", OJ), local("w_2", UP, { siteId: "upwork" })])).toEqual({ ok: true });
+
+    expect(api.watchCalls("POST").map((r) => r.body.url)).toEqual([UP]);
+    expect(storedWatches().map((w) => w.id)).toEqual([onWeb.id, api.watches[1].id]);
+  });
+
+  it("a watch added by hand while connected is not matched: adding is the user's own doing", async () => {
+    api.addWatch({ url: OJ });
+    await sync.syncWatches();
+
+    expect(await sync.addAccountWatch({ url: OJ_SPELLED, label: "Again" })).toEqual({ ok: true });
+
+    expect(api.watches).toHaveLength(2);
+    expect(storedWatches()).toEqual(api.watches.map(stored));
+  });
+});
+
 describe("importing a backup's watches into the account (WD-54, WD-111)", () => {
   beforeEach(connect);
 

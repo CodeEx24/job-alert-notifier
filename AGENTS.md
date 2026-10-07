@@ -88,6 +88,15 @@ this file mirrors its must-follow rules.
   watches aside (`watchdeskWatchesBeforeConnect`), never deleting them. One
   question per account per browser; a different account is asked afresh. The
   import removes nothing from this browser and counts what it cannot carry.
+- **Adding this browser's data to an account never doubles or overwrites
+  what the account has** (WD-82). A local watch that is the same search as
+  one of the account's becomes that watch; "the same search" is `watchKey()`
+  in `watch-url.js` only, in every sync and import. The account's label,
+  paused state and URL win; a match never sends a change. When in doubt two
+  URLs are different searches. A posting the account already has is skipped
+  (WatchDesk decides, by `source_key`), sent once, marked "applied" only when
+  WatchDesk says it was inserted, and counted as `listingsExisting`, apart
+  from `listingsNew`, in all and by site.
 - **The WatchDesk origin lives only in `config.js`** (and `manifest.json`'s
   `host_permissions`).
 - **No regression in shipped behaviour:** Open All Tabs, the settings panel,

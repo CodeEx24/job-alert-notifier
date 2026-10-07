@@ -68,7 +68,16 @@ function describeResult(counts) {
         : `${counts.watchesMatched} watches were already in your account`,
     );
   }
-  if (counts.listingsUploaded > 0) done.push(`${listingsWord(counts.listingsUploaded)} uploaded`);
+  // Added and already there are told apart (WD-82): a listing the account
+  // had was skipped, not uploaded.
+  if (counts.listingsNew > 0) done.push(`${listingsWord(counts.listingsNew)} uploaded`);
+  if (counts.listingsExisting > 0) {
+    done.push(
+      counts.listingsExisting === 1
+        ? "1 listing was already in your account"
+        : `${counts.listingsExisting} listings were already in your account`,
+    );
+  }
   if (counts.appliedMarked > 0) done.push(`${counts.appliedMarked} marked applied`);
   if (counts.settingsSaved.length > 0) done.push("your settings saved");
 
@@ -102,6 +111,15 @@ function describeResult(counts) {
   }
 
   const details = [...left];
+  // Not something left out, but something the user may not expect (WD-82):
+  // the watch here was named or paused differently, and the account's stays.
+  if (counts.watchesMatchedDiffer > 0) {
+    details.push(
+      counts.watchesMatchedDiffer === 1
+        ? "1 watch your account already had has a different name or paused state there. The account's was kept."
+        : `${counts.watchesMatchedDiffer} watches your account already had have a different name or paused state there. The account's were kept.`,
+    );
+  }
   // Said whenever a listing went up: WatchDesk dates it itself.
   if (counts.listingsNew > 0) {
     details.push("WatchDesk shows imported listings as found today: it doesn't take the date this browser found them.");
@@ -121,6 +139,11 @@ const sentence = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 const DATED_TODAY =
   "Imported listings will be dated the day of the import on WatchDesk, not the day this browser found them. The date each job was posted is kept.";
 
+// Said before the user chooses too (WD-82): an import adds to an account, it
+// does not overwrite what is there.
+const ALREADY_THERE =
+  "A watch or a listing your account already has is not added twice: the account keeps its own, with its name, paused state and status.";
+
 // What the card shows for a status: null when it is hidden, else { tone,
 // title, text, details, buttons }. Pure, so the tests can check every state.
 export function describeImport(status) {
@@ -133,7 +156,8 @@ export function describeImport(status) {
         title: "Import this browser's earlier data",
         text: `This browser kept ${what} from before it was connected. Import them into your WatchDesk account? It can take a minute.`,
         details: [
-          "Import uploads them to your account. A watch whose address the account already has is not added twice, and your settings from then replace the account's.",
+          "Import uploads them to your account. Your settings from then replace the account's.",
+          ALREADY_THERE,
           ...(status.listings > 0 ? [DATED_TODAY] : []),
           "Not now leaves everything as it is.",
         ],
@@ -146,6 +170,7 @@ export function describeImport(status) {
       text: `This browser has ${what} of its own. Import them into your WatchDesk account? It can take a minute.`,
       details: [
         "Import uploads them to your account. They stay in this browser too.",
+        ALREADY_THERE,
         ...(status.listings > 0 ? [DATED_TODAY] : []),
         "Not now keeps everything in this browser and starts the account without it. The watch list here then shows your account's watches; this browser's own are kept, and you can import them later from Settings.",
         "Until you choose, nothing is sent to WatchDesk and this browser keeps checking its own watches.",

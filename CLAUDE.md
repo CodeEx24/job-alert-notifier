@@ -159,6 +159,18 @@ Reference documents in the WatchDesk repository:
   Reset Extension clears all of the import's keys (`resetImport()`) except
   an unanswered question; a disconnection clears none. The import never removes anything from this browser, and what it
   cannot carry over is counted for the popup, never dropped silently.
+- **Adding this browser's data to an account never doubles or overwrites
+  what the account has** (WD-82). A watch of this browser that is the same
+  search as one of the account's becomes that watch: "the same search" is
+  `watchKey()` in `watch-url.js` and nothing else (the same site and URL but
+  for its spelling), for the first sync, a backup import and the WD-81 import
+  alike. The account's label, paused state and URL win, and no request ever
+  changes a watch because of a match. When in doubt two URLs are different
+  searches: never widen `watchKey()` to fold something a site could read. A
+  posting the account already has is WatchDesk's to recognise (`source_key`);
+  the import sends each posting once, marks "applied" only on rows WatchDesk
+  says it inserted, and counts added (`listingsNew`) apart from already there
+  (`listingsExisting`), in all and by site (`counts.bySite`).
 - **The WatchDesk origin is named in one place:** `config.js`, plus the same
   origins in `manifest.json`'s `host_permissions`. `tests/config.test.js`
   enforces this.
@@ -179,7 +191,8 @@ Reference documents in the WatchDesk repository:
 | `watchdesk-api.js` | The only WatchDesk API client (`requestJson`, the authenticated `authorizedRequest` with retries (WD-44), one function per route, including the four watch routes (WD-54), listing ingestion (WD-59) and reading / replacing the account's settings (WD-71, WD-79)) |
 | `account-connection.js` | Device pairing, token storage, connected state (WD-42); `captureConnection()`, the handle that binds a request to one token (WD-110), and `isCurrentConnection()` (WD-71); `isAccountActive()`, the hold on a freshly paired browser, and `changeImportRecord()` (WD-81) |
 | `watch-sync.js` | The watch list of a connected browser: sync with the account, first-connection upload, add / rename / pause / remove through the API (WD-54), adding an imported backup's watches (WD-111), and the import's watch step and the watches set aside by "Not now" (WD-81) |
-| `local-import.js` | The import of a browser's own watches, feed and settings into an account it has just been connected to (WD-81): deciding whether to ask, the user's answer, and the resumable upload (watches, listings, applied marks, settings) |
+| `watch-url.js` | When two watch URLs are the same search (WD-82): `watchKey()`, the one rule that says which of the account's watches a watch of this browser becomes |
+| `local-import.js` | The import of a browser's own watches, feed and settings into an account it has just been connected to (WD-81): deciding whether to ask, the user's answer, and the resumable upload (watches, listings, applied marks, settings); what the account already had is skipped and counted apart from what was added, by site too (WD-82) |
 | `watcher-state.js` | Whether the periodic check is running or paused, kept in this browser, and reporting it to the connected account's settings (WD-71) |
 | `account-settings.js` | The settings of a connected browser (WD-79): the last-synced copy the check cycle reads, loading and saving them through the API, the settings kept from before connecting, and `changeAccountSettings()`, the one read-modify-write every PUT of the account's settings goes through; a keyword-filter change applied to the account's current filter (`saveAccountTitleFilter()`, WD-80) |
 | `settings-limits.js` | What WatchDesk accepts for a setting, copied from its `lib/settings.ts` and `lib/validation/settings.ts` (WD-79) |

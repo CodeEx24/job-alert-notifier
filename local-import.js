@@ -35,9 +35,9 @@
 //
 // The import, in order (each step safe to repeat, so it can stop anywhere):
 //   1. watches   watch-sync.js's first sync: each watch of this browser
-//                becomes the account's watch with the same URL, or is
-//                uploaded. From then on its feed entries carry its id on
-//                WatchDesk.
+//                becomes the account's watch that is the same search
+//                (watch-url.js), or is uploaded. From then on its feed
+//                entries carry its id on WatchDesk.
 //   2. listings  the feed, by watch, at most INGEST_MAX_LISTINGS a request,
 //                straight to POST /api/listings/ingest and not through
 //                listing-ingest.js's retry queue, whose cap drops the oldest.
@@ -53,6 +53,21 @@
 // entry whose watch is gone or was refused, a listing or a setting WatchDesk
 // will not take, an applied mark on a listing the account already had.
 // Nothing is ever removed from this browser.
+//
+// What the account already has (WD-82) is never doubled and never replaced:
+//   - a watch that is the same search as one of the account's becomes that
+//     watch, which keeps its label, its paused state and its URL. How many
+//     did, and how many of them were named or paused differently here, is
+//     counted (watchesMatched, watchesMatchedDiffer);
+//   - a posting the account already has (WatchDesk decides, by the site and
+//     the site's id of the posting) is skipped, not added: it stays with the
+//     watch that found it first there, with its status. It is counted as
+//     listingsExisting, apart from listingsNew, and both are also counted by
+//     site in counts.bySite. One thing WatchDesk does do to it, as on every
+//     later sighting of a posting: its title, URL and Easy Apply flag become
+//     the ones sent, and a salary or workplace type it lacked is filled in;
+//   - a posting this browser holds under two watches is sent once, for the
+//     watch that found it first, and counted once as new.
 //
 // WatchDesk allows 120 requests a minute per device, shared with the check
 // cycle: requests go out one at a time, IMPORT_REQUEST_GAP_MS apart. When
@@ -160,12 +175,33 @@ async function forgetInterrupted(owner) {
   else await chrome.storage.local.set({ [IMPORT_INTERRUPTED_KEY]: kept });
 }
 
+// What became of the feed's entries, in all and (bySite) for each site:
+//   listingsNew        added to the account
+//   listingsExisting   skipped: the account already had the posting, or this
+//                      browser held it twice
+//   listingsRefused    WatchDesk would not store it
+//   listingsWatchGone  its watch was deleted on WatchDesk during the import
+//   listingsNoWatch    its watch is not on WatchDesk
+//   listingsInvalid    not a posting WatchDesk could store
+// listingsUploaded is listingsNew + listingsExisting: what WatchDesk answered
+// for.
+const emptySiteCounts = () => ({
+  listingsNew: 0,
+  listingsExisting: 0,
+  listingsRefused: 0,
+  listingsWatchGone: 0,
+  listingsNoWatch: 0,
+  listingsInvalid: 0,
+});
+
 const emptyCounts = () => ({
   watchesUploaded: 0,
   watchesMatched: 0,
+  watchesMatchedDiffer: 0,
   watchesRefused: 0,
   listingsUploaded: 0,
   listingsNew: 0,
+  listingsExisting: 0,
   listingsNoWatch: 0,
   listingsWatchGone: 0,
   listingsInvalid: 0,
@@ -174,7 +210,19 @@ const emptyCounts = () => ({
   appliedNotCarried: 0,
   settingsSaved: [],
   settingsRefused: [],
+  bySite: {},
 });
+
+// The site a count is kept under when an entry names none.
+const OTHER_SITE = "other";
+
+// Adds `n` to one of the listing counts of `counts`, in all and for `site`.
+function tally(counts, site, name, n) {
+  if (n <= 0) return;
+  counts[name] = (counts[name] || 0) + n;
+  const held = { ...emptySiteCounts(), ...counts.bySite?.[site] };
+  counts.bySite = { ...counts.bySite, [site]: { ...held, [name]: held[name] + n } };
+}
 
 // ---------- what this browser has ----------
 
@@ -559,6 +607,7 @@ async function importWatches(run) {
     ...run.record.counts,
     watchesUploaded: run.record.counts.watchesUploaded + result.created,
     watchesMatched: run.record.counts.watchesMatched + result.matched,
+    watchesMatchedDiffer: (run.record.counts.watchesMatchedDiffer || 0) + result.differing,
     // The watches WatchDesk refused stay in this browser and are named by
     // every sync, so this is their number, not an addition to it.
     watchesRefused: result.rejected,
@@ -588,12 +637,17 @@ function jobIdOf(entry) {
 const siteOfEntry = (entry) =>
   entry.siteId || (typeof entry.sourceKey === "string" ? entry.sourceKey.split(":")[0] : "") || null;
 
-// The feed entries still to send, as { groups, pending, noWatch, invalid }:
-// `groups` is watch id -> the postings to send for it, each { listing, keys,
-// applied }. Left out, and counted: an entry whose watch is not on WatchDesk
-// (removed here since, or refused there) or is on another site than the
-// entry — a listing's site comes from its watch, so it would be filed as a
-// different posting — and an entry WatchDesk could not store.
+// The feed entries still to send, as { groups, pending, leftOut }: `groups`
+// is watch id -> the postings to send for it, each { listing, keys, applied,
+// site }. A posting is named as WatchDesk names it, by its watch's site and
+// the site's id of it, and is sent once: one this browser holds under two
+// watches (WD-82) goes to the watch that found it first, as WatchDesk files
+// a posting two watches find, and the other entry only adds its key and its
+// applied mark. Left out, and counted by site in `leftOut`: an entry whose
+// watch is not on WatchDesk (removed here since, or refused there) or is on
+// another site than the entry — a listing's site comes from its watch, so it
+// would be filed as a different posting — and an entry WatchDesk could not
+// store.
 async function planListings(run) {
   const serverIds = new Set(await getServerWatchIds());
   const { watches } = await chrome.storage.sync.get("watches");
@@ -601,33 +655,49 @@ async function planListings(run) {
     (Array.isArray(watches) ? watches : []).filter((w) => w && serverIds.has(w.id)).map((w) => [w.id, w.siteId || null]),
   );
   const sent = new Set(run.record.sent);
-  const groups = new Map();
+  const postings = new Map();
+  const leftOut = {};
   let pending = 0;
-  let noWatch = 0;
-  let invalid = 0;
   for (const entry of await feedEntries()) {
     const key = entryKey(entry);
     if (key && sent.has(key)) continue;
-    const listing = key ? toListing({ ...entry, id: jobIdOf(entry) }) : null;
-    if (!listing) {
-      invalid += 1;
-      continue;
-    }
     const site = siteOfWatch.get(entry.watchId);
     const entrySite = siteOfEntry(entry);
-    if (site === undefined || (site && entrySite && site !== entrySite)) {
-      noWatch += 1;
+    const listing = key ? toListing({ ...entry, id: jobIdOf(entry) }) : null;
+    if (!listing) {
+      tally(leftOut, entrySite || site || OTHER_SITE, "listingsInvalid", 1);
       continue;
     }
-    if (!groups.has(entry.watchId)) groups.set(entry.watchId, new Map());
-    const group = groups.get(entry.watchId);
-    const item = group.get(listing.id) || { listing, keys: [], applied: false };
-    item.keys.push(key);
-    item.applied = item.applied || entry.applied === true;
-    group.set(listing.id, item);
+    if (site === undefined || (site && entrySite && site !== entrySite)) {
+      tally(leftOut, entrySite || OTHER_SITE, "listingsNoWatch", 1);
+      continue;
+    }
     pending += 1;
+    const postingSite = site || entrySite || OTHER_SITE;
+    const posting = `${postingSite}:${listing.id}`;
+    const found = Number.isFinite(entry.detectedAt) ? entry.detectedAt : Infinity;
+    const held = postings.get(posting);
+    if (!held) {
+      postings.set(posting, {
+        listing,
+        keys: [key],
+        applied: entry.applied === true,
+        site: postingSite,
+        watchId: entry.watchId,
+        found,
+      });
+      continue;
+    }
+    held.keys.push(key);
+    held.applied = held.applied || entry.applied === true;
+    if (found < held.found) Object.assign(held, { listing, watchId: entry.watchId, found });
   }
-  return { groups, pending, noWatch, invalid };
+  const groups = new Map();
+  for (const item of postings.values()) {
+    if (!groups.has(item.watchId)) groups.set(item.watchId, []);
+    groups.get(item.watchId).push(item);
+  }
+  return { groups, pending, leftOut };
 }
 
 // The entries of `items` are answered for: WatchDesk has them, or never will.
@@ -654,21 +724,25 @@ async function sendListings(run, watchId, items) {
   const counts = { ...run.record.counts };
   if (result.kind === "ok") {
     // WatchDesk names the listings this request added, and only those: an
-    // applied mark can follow them, not one the account already had.
+    // applied mark can follow them, not one the account already had. The
+    // others it already had (WD-82): skipped, with the watch and the status
+    // they have there.
     const added = new Map(result.inserted.map((row) => [row.jobId, row.id]));
     const marks = [...run.record.marks];
     for (const item of items) {
+      const isNew = added.has(item.listing.id);
+      tally(counts, item.site, "listingsNew", isNew ? 1 : 0);
+      tally(counts, item.site, "listingsExisting", item.keys.length - (isNew ? 1 : 0));
       if (!item.applied) continue;
-      if (added.has(item.listing.id)) marks.push(added.get(item.listing.id));
+      if (isNew) marks.push(added.get(item.listing.id));
       else counts.appliedNotCarried += 1;
     }
     counts.listingsUploaded += entriesIn(items);
-    counts.listingsNew += result.inserted.length;
     await answered(run, items, counts, { marks });
     return false;
   }
   if (result.kind === "not-found") {
-    counts.listingsWatchGone += entriesIn(items);
+    for (const item of items) tally(counts, item.site, "listingsWatchGone", item.keys.length);
     await answered(run, items, counts);
     return true;
   }
@@ -676,7 +750,7 @@ async function sendListings(run, watchId, items) {
     // One listing WatchDesk will not take refuses the whole request. Halve
     // it until that one is alone, leave it out, and send the rest.
     if (items.length === 1) {
-      counts.listingsRefused += entriesIn(items);
+      tally(counts, items[0].site, "listingsRefused", entriesIn(items));
       await answered(run, items, counts);
       return false;
     }
@@ -692,7 +766,7 @@ async function sendListings(run, watchId, items) {
 async function watchGone(run, items) {
   if (items.length > 0) {
     const counts = { ...run.record.counts };
-    counts.listingsWatchGone += entriesIn(items);
+    for (const item of items) tally(counts, item.site, "listingsWatchGone", item.keys.length);
     await answered(run, items, counts);
   }
   return true;
@@ -701,14 +775,18 @@ async function watchGone(run, items) {
 // 2. The feed.
 async function importListings(run) {
   const plan = await planListings(run);
-  await progress(run, {
-    listingsTotal: run.record.sent.length + plan.pending,
-    // What this browser holds now, not a sum over runs: these entries are
-    // looked at afresh by every run.
-    counts: { ...run.record.counts, listingsNoWatch: plan.noWatch, listingsInvalid: plan.invalid },
-  });
-  for (const [watchId, group] of plan.groups) {
-    const items = [...group.values()];
+  // What this browser holds now that cannot go, not a sum over runs: these
+  // entries are looked at afresh by every run.
+  const counts = { ...run.record.counts, listingsNoWatch: 0, listingsInvalid: 0, bySite: {} };
+  for (const [site, held] of Object.entries(run.record.counts.bySite || {})) {
+    counts.bySite[site] = { ...emptySiteCounts(), ...held, listingsNoWatch: 0, listingsInvalid: 0 };
+  }
+  for (const [site, left] of Object.entries(plan.leftOut.bySite || {})) {
+    tally(counts, site, "listingsNoWatch", left.listingsNoWatch);
+    tally(counts, site, "listingsInvalid", left.listingsInvalid);
+  }
+  await progress(run, { listingsTotal: run.record.sent.length + plan.pending, counts });
+  for (const [watchId, items] of plan.groups) {
     for (let start = 0; start < items.length; start += INGEST_MAX_LISTINGS) {
       if (await sendListings(run, watchId, items.slice(start, start + INGEST_MAX_LISTINGS))) {
         await watchGone(run, items.slice(start + INGEST_MAX_LISTINGS));
