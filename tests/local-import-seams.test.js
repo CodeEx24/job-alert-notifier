@@ -182,6 +182,8 @@ describe("uploadOwnWatches (the import's first step)", () => {
       ok: true,
       created: 1,
       matched: 1,
+      // WD-82: the account's watch is named differently, and its name stays.
+      differing: 1,
       rejected: 1,
       waiting: 0,
       stoppedBy: null,
@@ -223,6 +225,7 @@ describe("uploadOwnWatches (the import's first step)", () => {
       ok: true,
       created: 1,
       matched: 0,
+      differing: 0,
       rejected: 0,
       waiting: 2,
       stoppedBy: { kind: "rate-limited", retryAfterSeconds: 30 },

@@ -7,7 +7,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "lint": "eslint config.js watchdesk-api.js account-connection.js watch-sync.js listing-ingest.js watcher-state.js account-settings.js settings-limits.js local-import.js popup-account.js popup-watch-sync.js popup-watcher.js popup-settings-sync.js popup-local-import.js tests scripts eslint.config.js vitest.config.js && node scripts/check-syntax.js",
+    "lint": "eslint config.js watchdesk-api.js account-connection.js watch-sync.js watch-url.js listing-ingest.js watcher-state.js account-settings.js settings-limits.js local-import.js popup-account.js popup-watch-sync.js popup-watcher.js popup-settings-sync.js popup-local-import.js tests scripts eslint.config.js vitest.config.js && node scripts/check-syntax.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },

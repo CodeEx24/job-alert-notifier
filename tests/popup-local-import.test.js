@@ -33,9 +33,11 @@ const entry = (watch, n, extra = {}) => ({
 const COUNTS = {
   watchesUploaded: 0,
   watchesMatched: 0,
+  watchesMatchedDiffer: 0,
   watchesRefused: 0,
   listingsUploaded: 0,
   listingsNew: 0,
+  listingsExisting: 0,
   listingsNoWatch: 0,
   listingsWatchGone: 0,
   listingsInvalid: 0,
@@ -87,6 +89,8 @@ describe("what the card says (describeImport)", () => {
     );
     expect(view.details).toEqual([
       "Import uploads them to your account. They stay in this browser too.",
+      // WD-82: an import adds to the account, it replaces nothing there.
+      "A watch or a listing your account already has is not added twice: the account keeps its own, with its name, paused state and status.",
       // Said before the choice, in plain words.
       "Imported listings will be dated the day of the import on WatchDesk, not the day this browser found them. The date each job was posted is kept.",
       "Not now keeps everything in this browser and starts the account without it. The watch list here then shows your account's watches; this browser's own are kept, and you can import them later from Settings.",
@@ -185,6 +189,43 @@ describe("what the card says (describeImport)", () => {
     expect(describeImport({ phase: "done", counts: COUNTS }).text).toBe("There was nothing WatchDesk didn't already have.");
   });
 
+  // WD-82: what the account already had is told apart from what was added.
+  it("says how many listings were added and how many the account already had, never the two as one number", () => {
+    const view = describeImport({
+      phase: "done",
+      counts: { ...COUNTS, watchesUploaded: 1, listingsUploaded: 41, listingsNew: 30, listingsExisting: 11 },
+    });
+    expect(view.text).toBe("1 watch uploaded, 30 listings uploaded, 11 listings were already in your account.");
+    expect(view.tone).toBe("ok");
+    expect(describeImport({ phase: "done", counts: { ...COUNTS, listingsUploaded: 1, listingsExisting: 1 } }).text).toBe(
+      "1 listing was already in your account.",
+    );
+  });
+
+  it("says when a watch the account already had is named or paused differently there, and that the account's was kept", () => {
+    const line = (counts) =>
+      describeImport({ phase: "done", counts: { ...COUNTS, ...counts } }).details.filter((text) => text.includes("different name"));
+    expect(line({ watchesMatched: 2, watchesMatchedDiffer: 1 })).toEqual([
+      "1 watch your account already had has a different name or paused state there. The account's was kept.",
+    ]);
+    expect(line({ watchesMatched: 3, watchesMatchedDiffer: 2 })).toEqual([
+      "2 watches your account already had have a different name or paused state there. The account's were kept.",
+    ]);
+    expect(line({ watchesMatched: 3, watchesMatchedDiffer: 0 })).toEqual([]);
+    // Not something left out: the import is not "with some left out" for it.
+    expect(describeImport({ phase: "done", counts: { ...COUNTS, watchesMatched: 1, watchesMatchedDiffer: 1 } }).tone).toBe("ok");
+  });
+
+  it("both questions say, before the choice, that what the account has is not added twice and is kept", () => {
+    const said = "A watch or a listing your account already has is not added twice: the account keeps its own, with its name, paused state and status.";
+    expect(describeImport({ phase: "offered", again: false, watches: 1, listings: 0, settings: false }).details).toContain(said);
+    expect(describeImport({ phase: "offered", again: true, watches: 1, listings: 0, settings: false }).details).toEqual([
+      "Import uploads them to your account. Your settings from then replace the account's.",
+      said,
+      "Not now leaves everything as it is.",
+    ]);
+  });
+
   it("the settings panel's row is there only after a No, while something could still be imported", () => {
     expect(describeImportAgain({ phase: "declined", available: true, watches: 5, listings: 2, settings: true })).toBe(
       "This browser kept 5 watches, 2 listings and your settings from before it was connected. Nothing of it was uploaded.",
@@ -192,6 +233,33 @@ describe("what the card says (describeImport)", () => {
     expect(describeImportAgain({ phase: "declined", available: false, watches: 0, listings: 0, settings: false })).toBeNull();
     expect(describeImportAgain({ phase: "offered", again: true, watches: 5, listings: 2, settings: true })).toBeNull();
     expect(describeImportAgain(null)).toBeNull();
+  });
+});
+
+describe("in the popup, on a second device whose account already has some of it (WD-82)", () => {
+  it("the end says what was added, what the account already had, and whose name and status were kept", async () => {
+    await pairedPopup();
+    const theirs = ext.api.addWatch({ url: "http://onlinejobs.ph/jobseekers/jobsearch/#results", label: "My OJ search", enabled: false });
+    ext.api.listings.push({ listingId: "listing-old", sourceKey: "onlinejobsph:1", watchId: theirs.id, listing: { id: "1" }, status: "interviewing" });
+
+    await page.click(page.$("local-import-accept"));
+    await drive();
+
+    expect(page.text("local-import-title")).toBe("Your data was imported, with some left out");
+    expect(page.text("local-import-text")).toBe(
+      "4 watches uploaded, 1 watch was already in your account, 1 listing uploaded, 1 listing was already in your account, your settings saved.",
+    );
+    expect(details()).toEqual([
+      "1 applied mark not carried over: WatchDesk already had that listing, and its own status was left as it is.",
+      "1 watch your account already had has a different name or paused state there. The account's was kept.",
+      "WatchDesk shows imported listings as found today: it doesn't take the date this browser found them.",
+      "Everything is still in this browser too.",
+    ]);
+    // The list is the account's: the watch under the account's name, paused.
+    expect(page.labels()).toContain("My OJ search");
+    expect(page.labels()).not.toContain(OJ.label);
+    expect(ext.api.listings.find((row) => row.sourceKey === "onlinejobsph:1").status).toBe("interviewing");
+    expect(ext.api.watches.filter((w) => w.siteId === "onlinejobsph")).toHaveLength(1);
   });
 });
 
@@ -204,8 +272,9 @@ describe("in the popup, after a first pairing", () => {
     expect(page.text("local-import-text")).toBe(
       "This browser has 5 watches, 2 listings and your settings of its own. Import them into your WatchDesk account? It can take a minute.",
     );
-    expect(details()).toHaveLength(4);
-    expect(details()[1]).toContain("Imported listings will be dated the day of the import on WatchDesk");
+    expect(details()).toHaveLength(5);
+    expect(details()[1]).toContain("already has is not added twice");
+    expect(details()[2]).toContain("Imported listings will be dated the day of the import on WatchDesk");
     expect(shownButtons()).toEqual(["Import", "Not now"]);
     // Connected, by name, and not syncing: no sync line, the browser's own
     // watches in the list, and the settings panel says why.

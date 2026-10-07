@@ -106,6 +106,26 @@ export function installFakeWatchDesk({ now = () => Date.now(), saveUrl = (url) =
   // however often it is sent.
   const listings = [];
   let ingestRoute = () => undefined;
+  // What a second sighting does to a posting the account already has
+  // (WatchDesk WD-57, decision 7; written out here because that is the
+  // server's code): the title, URL and Easy Apply flag become what was sent;
+  // a salary or workplace type that was sent replaces the one held, and one
+  // that was not is kept; the posted date is the first reading that had one.
+  // Never the watch, the status or when it was found (WD-82).
+  const refresh = (row, sent) => {
+    const held = row.listing;
+    row.listing = {
+      ...held,
+      title: sent.title,
+      url: sent.url,
+      easyApply: sent.easyApply ?? false,
+      salaryRaw: sent.salaryRaw ?? held.salaryRaw ?? null,
+      workplaceType: sent.workplaceType ?? held.workplaceType ?? null,
+      ...(held.postedAt || held.postedRaw
+        ? {}
+        : { postedRaw: sent.postedRaw ?? null, postedAt: sent.postedAt ?? null, postedApprox: sent.postedApprox ?? false }),
+    };
+  };
   const answerIngest = (request) => {
     const scripted = ingestRoute(request);
     if (scripted) return scripted;
@@ -125,7 +145,11 @@ export function installFakeWatchDesk({ now = () => Date.now(), saveUrl = (url) =
       const sourceKey = `${watch.siteId}:${listing.id}`;
       if (inBatch.has(sourceKey)) continue;
       inBatch.add(sourceKey);
-      if (listings.some((row) => row.sourceKey === sourceKey)) continue;
+      const had = listings.find((row) => row.sourceKey === sourceKey);
+      if (had) {
+        refresh(had, listing);
+        continue;
+      }
       const row = { listingId: `listing-${listings.length + 1}`, sourceKey, watchId: watch.id, listing, status: "new" };
       listings.push(row);
       inserted.push({ id: row.listingId, jobId: listing.id });

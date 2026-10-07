@@ -18,10 +18,20 @@
 //   - a watch this browser got from WatchDesk earlier and that is no longer
 //     listed was deleted there, and goes;
 //   - any other watch is this browser's own, from before it was connected.
-//     One whose URL is already on WatchDesk becomes that watch; the rest are
-//     uploaded. So connecting never loses a watch and never doubles one.
+//     One that is the same search as a watch already on WatchDesk becomes
+//     that watch; the rest are uploaded. So connecting never loses a watch
+//     and never doubles one.
+// "The same search" (WD-82) is watch-url.js's watchKey(): the same site and
+// the same URL but for its spelling (a trailing slash, "www.", the order of
+// the parameters, a tracking parameter, a fragment). The account's watch is
+// kept exactly as it is: its label, its paused state and its spelling of the
+// URL win, and nothing on WatchDesk is changed by a match. Of several
+// watches of the account that are the same search, the one spelled exactly
+// like the local one is taken, else the oldest.
 // A watch that takes a server id keeps its run state (seen jobs, last
-// result), moved from its old id, so it does not start over.
+// result), moved from its old id, so it does not start over. When two
+// watches become one, the postings either has seen are the one's: none of
+// them is announced as new again.
 // An import (importAccountWatches, WD-111) is a sync in which the backup
 // file's watches stand in for the copy; it changes nothing unless WatchDesk
 // answers.
@@ -65,6 +75,7 @@ import {
   WATCH_SYNC_KEY,
 } from "./account-connection.js";
 import { listWatches, createWatch, updateWatch, deleteWatch } from "./watchdesk-api.js";
+import { watchKey } from "./watch-url.js";
 
 const WATCHES_KEY = "watches";
 export const WATCHES_SNAPSHOT_KEY = "watchdeskWatchesBeforeConnect";
@@ -128,7 +139,10 @@ async function writeCopy(next, previous) {
 }
 
 // Moves run state from an own watch's id to the server id it became, and
-// drops it for watches deleted on WatchDesk.
+// drops it for watches deleted on WatchDesk. A watch that became one this
+// browser already has run state for (two watches that are the same search,
+// WD-82) adds the postings it has seen to that watch's; the rest of that
+// watch's state stays.
 async function carryRunState(idMap, removedIds) {
   if (idMap.size === 0 && removedIds.length === 0) return;
   const stored = await chrome.storage.local.get([...RUN_STATE_MAPS, "feed"]);
@@ -140,6 +154,9 @@ async function carryRunState(idMap, removedIds) {
     for (const [from, to] of idMap) {
       if (!(from in map)) continue;
       if (!(to in map)) map[to] = map[from];
+      else if (key === "seenIds" && Array.isArray(map[to]) && Array.isArray(map[from])) {
+        map[to] = [...new Set([...map[to], ...map[from]])];
+      }
       delete map[from];
       changed = true;
     }
@@ -250,8 +267,10 @@ export async function getServerWatchIds() {
 // every upload to one token; without it nothing changes.
 // A successful answer carries `outcome`: how many of this browser's watches
 // were uploaded (`created`), became a watch the account already had
-// (`matched`), were refused by WatchDesk (`rejected`) or could not be sent
-// yet (`waiting`, with `stoppedBy`, the answer that ended the uploads).
+// (`matched`; `differing` of them under another label or paused state than
+// they had here, which the account's replaced), were refused by WatchDesk
+// (`rejected`) or could not be sent yet (`waiting`, with `stoppedBy`, the
+// answer that ended the uploads).
 async function runSync(imported, { own = [], connection } = {}) {
   if (!(await isAccountActive())) return null;
 
@@ -275,10 +294,16 @@ async function runSync(imported, { own = [], connection } = {}) {
   const keepOwn = !imported && own.length === 0 && (await keepsOwnWatchesLocal());
 
   const onServer = new Set(listed.watches.map((w) => w.id));
+  // The account's watches by URL as spelled, and by the search the URL is
+  // (WD-82). The list is oldest first, and the first of each is kept.
   const byUrl = new Map();
-  for (const watch of listed.watches) {
-    if (!byUrl.has(watch.url)) byUrl.set(watch.url, watch);
-  }
+  const bySearch = new Map();
+  const remember = (url, watch) => {
+    if (!byUrl.has(url)) byUrl.set(url, watch);
+    const key = watchKey(url);
+    if (!bySearch.has(key)) bySearch.set(key, watch);
+  };
+  for (const watch of listed.watches) remember(watch.url, watch);
   const known = new Set(imported ? [] : state.serverIds);
   const rejected = new Set(imported ? [] : state.rejectedIds);
 
@@ -288,6 +313,7 @@ async function runSync(imported, { own = [], connection } = {}) {
   const localOnly = [];
   const rejectedIds = [];
   const aside = [];
+  let differing = 0;
   let uploading = true;
   let stoppedBy = null;
 
@@ -297,12 +323,13 @@ async function runSync(imported, { own = [], connection } = {}) {
       removedIds.push(watch.id);
       continue;
     }
-    // The one conflict rule: a watch of this browser whose URL the account
-    // already has becomes that watch, and the account's label and paused
-    // state win. WD-82 (conflict handling for the import) changes it here.
-    const twin = byUrl.get(watch.url);
+    // The one conflict rule: a watch of this browser that is the same
+    // search as one the account already has becomes that watch, and the
+    // account's label and paused state win (WD-82: see the top of the file).
+    const twin = byUrl.get(watch.url) || bySearch.get(watchKey(watch.url));
     if (twin) {
       idMap.set(watch.id, twin.id);
+      if ((watch.label && watch.label !== twin.label) || (watch.enabled !== false) !== (twin.enabled !== false)) differing += 1;
       continue;
     }
     if (keepOwn) {
@@ -325,10 +352,11 @@ async function runSync(imported, { own = [], connection } = {}) {
     if (result.kind === "ok") {
       created.push(result.watch);
       idMap.set(watch.id, result.watch.id);
-      // Another own watch with the same URL becomes this one, whichever
-      // spelling of the URL (as stored here, as stored there) it has.
-      byUrl.set(watch.url, result.watch);
-      if (!byUrl.has(result.watch.url)) byUrl.set(result.watch.url, result.watch);
+      // Another own watch that is the same search becomes this one,
+      // whichever spelling of the URL (as stored here, as stored there) it
+      // has.
+      remember(watch.url, result.watch);
+      remember(result.watch.url, result.watch);
       continue;
     }
     if (result.kind === "unauthorized" || result.kind === "connection-changed") return result;
@@ -362,6 +390,7 @@ async function runSync(imported, { own = [], connection } = {}) {
     outcome: {
       created: created.length,
       matched: idMap.size - created.length,
+      differing,
       rejected: rejectedIds.length,
       waiting: localOnly.length - rejectedIds.length,
       stoppedBy,
@@ -536,7 +565,8 @@ export function removeAccountWatch(id) {
 // each of `watches` is matched to it by URL or uploaded, and the copy
 // becomes the account's list. When WatchDesk does not answer with the list,
 // nothing is imported and the copy stays as it was, so the file's watches
-// are never shown as the list without being on WatchDesk. A watch WatchDesk
+// are never shown as the list without being on WatchDesk. "By URL" is by the
+// search the URL is (watch-url.js, WD-82), as in every sync. A watch WatchDesk
 // then refuses, or cannot take just now, stays in this browser and is
 // counted as `localOnly`, as after any sync.
 export function importAccountWatches(watches) {
@@ -557,8 +587,8 @@ export function importAccountWatches(watches) {
 // uploads every watch that is only in this browser, `own` (the ones set
 // aside by an earlier "no") included, on `connection` only. Safe to repeat:
 // a watch already uploaded is matched by its id or its URL, never made
-// twice. Resolves to { ok: true, created, matched, rejected, waiting,
-// stoppedBy } (see runSync), or { ok: false, kind, retryAfterSeconds?, error }
+// twice. Resolves to { ok: true, created, matched, differing, rejected,
+// waiting, stoppedBy } (see runSync), or { ok: false, kind, retryAfterSeconds?, error }
 // when WatchDesk did not give the account's list and nothing was done. Never
 // throws.
 export function uploadOwnWatches(own, connection) {

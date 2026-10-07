@@ -44,6 +44,16 @@ const entry = (watch, n, extra = {}) => ({
   appliedAt: null,
   ...extra,
 });
+// One site's share of the import's listing counts (WD-82).
+const siteCounts = (counts) => ({
+  listingsNew: 0,
+  listingsExisting: 0,
+  listingsRefused: 0,
+  listingsWatchGone: 0,
+  listingsNoWatch: 0,
+  listingsInvalid: 0,
+  ...counts,
+});
 const entries = (watch, from, count) => Array.from({ length: count }, (_, i) => entry(watch, from + i));
 
 let ext;
@@ -304,9 +314,18 @@ describe("Import", () => {
       counts: {
         watchesUploaded: 5,
         watchesMatched: 0,
+        watchesMatchedDiffer: 0,
         watchesRefused: 0,
         listingsUploaded: 5,
         listingsNew: 5,
+        listingsExisting: 0,
+        // WD-82: the same counts, by site.
+        bySite: {
+          onlinejobsph: siteCounts({ listingsNew: 2 }),
+          glassdoor: siteCounts({ listingsNew: 1 }),
+          linkedin: siteCounts({ listingsNew: 1 }),
+          upwork: siteCounts({ listingsNew: 1 }),
+        },
         listingsNoWatch: 0,
         listingsWatchGone: 0,
         listingsInvalid: 0,
