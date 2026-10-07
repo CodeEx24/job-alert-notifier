@@ -48,7 +48,9 @@ const RESET_CONFIRM =
 // WD-71 added set-watcher-state (Start Watching / Pause Watching).
 // WD-79 added sync-settings (loading a connected account's settings); the
 // popup does not send it with no account connected.
-const SINCE_SHIPPED = /^(account-|sync-watches$|sync-settings$|listing-drops-seen$|set-watcher-state$)/;
+// WD-81 added the local-import-* messages (the import question's answers);
+// the popup sends none of them unless one of its buttons is pressed.
+const SINCE_SHIPPED = /^(account-|local-import-|sync-watches$|sync-settings$|listing-drops-seen$|set-watcher-state$)/;
 const asShipped = (messages) => messages.filter((m) => !SINCE_SHIPPED.test(m.type));
 
 let ext;

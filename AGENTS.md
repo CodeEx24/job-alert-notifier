@@ -63,7 +63,20 @@ this file mirrors its must-follow rules.
   one at a time, on one `captureConnection()`; never from the local copy.
   Reset leaves the account's settings; Import saves the file's through
   `saveAccountSettings()`. The settings from before the first sync are kept
-  in `chrome.storage.local` for WD-81, never uploaded.
+  in `chrome.storage.local`, uploaded only by the import the user asked for
+  (WD-81).
+- **A freshly paired browser syncs nothing until the user has answered the
+  import question** (WD-81): `completePairing()` writes `watchdeskImport`
+  with the token, and while it is `connecting` or `offered` every module is in
+  its unconnected mode. Pick a mode with `isAccountActive()`, never
+  `isConnected()`. "Import" (`local-import.js`) uploads watches, the feed
+  (straight to the ingest route, never through the WD-60 queue), applied
+  marks and the settings the user stored, each request bound to one
+  `captureConnection()`, progress in storage, the record changed only through
+  `changeImportRecord()`. "Not now" uploads nothing and sets the browser's own
+  watches aside (`watchdeskWatchesBeforeConnect`), never deleting them. One
+  question per account per browser; a different account is asked afresh. The
+  import removes nothing from this browser and counts what it cannot carry.
 - **The WatchDesk origin lives only in `config.js`** (and `manifest.json`'s
   `host_permissions`).
 - **No regression in shipped behaviour:** Open All Tabs, the settings panel,

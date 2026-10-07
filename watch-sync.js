@@ -39,6 +39,16 @@
 //   account-connection.js removes this key whenever a token is stored or
 //   dropped, so a new connection starts from "every watch is this
 //   browser's own".
+//   chrome.storage.local -> watchdeskWatchesBeforeConnect { takenAt, watches }
+//     The watches of this browser that the user chose not to import into an
+//     account (WD-81), as they were. Never uploaded, never removed here:
+//     local-import.js offers them again from the settings panel.
+//
+// A freshly paired browser (WD-81): until the user has answered the import
+// question (account-connection.js's isAccountActive), nothing here does
+// anything, as with no account connected. If the answer is no, a watch that
+// is only in this browser is set aside in the snapshot above instead of
+// being uploaded, so the account starts without it and it is not lost.
 //
 // While WatchDesk is unreachable a change is refused with a message, not
 // queued: a queue would have to be replayed against a list that may have
@@ -47,10 +57,17 @@
 // Nothing here sees the device token: the calls go through
 // watchdesk-api.js's authorizedRequest().
 
-import { isConnected, WATCH_SYNC_KEY } from "./account-connection.js";
+import {
+  isAccountActive,
+  isConnected,
+  isCurrentConnection,
+  keepsOwnWatchesLocal,
+  WATCH_SYNC_KEY,
+} from "./account-connection.js";
 import { listWatches, createWatch, updateWatch, deleteWatch } from "./watchdesk-api.js";
 
 const WATCHES_KEY = "watches";
+export const WATCHES_SNAPSHOT_KEY = "watchdeskWatchesBeforeConnect";
 // Run state background.js keeps per watch id, in chrome.storage.local.
 const RUN_STATE_MAPS = ["seenIds", "lastChecked", "lastResult", "consecutiveErrors"];
 
@@ -142,16 +159,56 @@ async function carryRunState(idMap, removedIds) {
   if (Object.keys(patch).length > 0) await chrome.storage.local.set(patch);
 }
 
+// ---------- watches kept out of the account (WD-81) ----------
+
+// The watches set aside so far: this browser's own, which the user chose not
+// to import.
+export async function getSetAsideWatches() {
+  const { [WATCHES_SNAPSHOT_KEY]: snapshot } = await chrome.storage.local.get(WATCHES_SNAPSHOT_KEY);
+  return Array.isArray(snapshot?.watches)
+    ? snapshot.watches.filter((w) => w && typeof w.id === "string" && typeof w.url === "string")
+    : [];
+}
+
+// Adds `watches` to the ones set aside, one per URL, the first kept.
+async function setAside(watches) {
+  const kept = await getSetAsideWatches();
+  const urls = new Set(kept.map((w) => w.url));
+  const added = [];
+  for (const watch of watches) {
+    if (!watch || typeof watch.url !== "string" || urls.has(watch.url)) continue;
+    urls.add(watch.url);
+    added.push(watch);
+  }
+  if (added.length === 0) return;
+  await chrome.storage.local.set({ [WATCHES_SNAPSHOT_KEY]: { takenAt: Date.now(), watches: [...kept, ...added] } });
+}
+
+// What a first sync treats as this browser's own list: the stored one, or
+// the default watch of a browser that never stored any.
+export async function getOwnWatches() {
+  const stored = await readCopy();
+  return stored.length > 0 ? stored : config.unsyncedFallback();
+}
+
+// The user declined the import: this browser's list is kept as it is now,
+// before the first sync makes the stored list the account's.
+export function keepOwnWatches() {
+  return withLock(async () => setAside(await getOwnWatches()));
+}
+
 // ---------- what background.js and the popup ask ----------
 
+// Not while a freshly paired browser is still waiting for the user's answer
+// to the import question (WD-81): until then the list is this browser's own.
 export function usesAccountWatches() {
-  return isConnected();
+  return isAccountActive();
 }
 
 // True once this connection has had WatchDesk's list. From then on an empty
 // list means the account has no watches, not "show the default watch".
 export async function hasSyncedAccountWatches() {
-  return (await isConnected()) && (await readState()).lastSyncedAt != null;
+  return (await isAccountActive()) && (await readState()).lastSyncedAt != null;
 }
 
 // What the popup shows about the list:
@@ -160,7 +217,7 @@ export async function hasSyncedAccountWatches() {
 // `localOnly` counts watches kept in this browser that are not on WatchDesk
 // (waiting to be uploaded, or refused by it).
 export async function getWatchSyncStatus() {
-  if (!(await isConnected())) return { mode: "local" };
+  if (!(await isAccountActive())) return { mode: "local" };
   const state = await readState();
   let localOnly = 0;
   if (state.lastSyncedAt != null) {
@@ -175,7 +232,7 @@ export async function getWatchSyncStatus() {
 // refused by WatchDesk, has only a local id and is not in here. Empty when
 // not connected.
 export async function getServerWatchIds() {
-  if (!(await isConnected())) return [];
+  if (!(await isAccountActive())) return [];
   return (await readState()).serverIds;
 }
 
@@ -187,12 +244,21 @@ export async function getServerWatchIds() {
 // own: matched to the account by URL or uploaded, never read as "deleted on
 // WatchDesk" because its id is missing there. Until WatchDesk has answered,
 // the copy is not touched.
-async function runSync(imported) {
-  if (!(await isConnected())) return null;
+// `own` (WD-81) are watches set aside earlier that the user now wants in the
+// account: they join the copy for this sync and are matched or uploaded like
+// any other watch of this browser. `connection` binds the list request and
+// every upload to one token; without it nothing changes.
+// A successful answer carries `outcome`: how many of this browser's watches
+// were uploaded (`created`), became a watch the account already had
+// (`matched`), were refused by WatchDesk (`rejected`) or could not be sent
+// yet (`waiting`, with `stoppedBy`, the answer that ended the uploads).
+async function runSync(imported, { own = [], connection } = {}) {
+  if (!(await isAccountActive())) return null;
 
-  const listed = await listWatches();
-  // A 401 has already discarded the token (and this module's state with it).
-  if (listed.kind === "unauthorized") return listed;
+  const listed = await listWatches(connection);
+  // A 401 has already discarded the token (and this module's state with it);
+  // a changed connection is another account's, and nothing here is its.
+  if (listed.kind === "unauthorized" || listed.kind === "connection-changed") return listed;
   if (listed.kind !== "ok") {
     await setOffline(true);
     return listed;
@@ -201,7 +267,12 @@ async function runSync(imported) {
   const state = await readState();
   const stored = await readCopy();
   // A browser that never stored a list is showing its default watch.
-  const copy = imported || (stored.length > 0 || state.lastSyncedAt != null ? stored : config.unsyncedFallback());
+  const current = imported || (stored.length > 0 || state.lastSyncedAt != null ? stored : config.unsyncedFallback());
+  const held = new Set(current.map((w) => w.id));
+  const copy = [...current, ...own.filter((w) => w && typeof w.id === "string" && !held.has(w.id))];
+  // WD-81: the user declined the import, so what is only in this browser
+  // stays out of the account.
+  const keepOwn = !imported && own.length === 0 && (await keepsOwnWatchesLocal());
 
   const onServer = new Set(listed.watches.map((w) => w.id));
   const byUrl = new Map();
@@ -216,7 +287,9 @@ async function runSync(imported) {
   const created = [];
   const localOnly = [];
   const rejectedIds = [];
+  const aside = [];
   let uploading = true;
+  let stoppedBy = null;
 
   for (const watch of copy) {
     if (onServer.has(watch.id)) continue;
@@ -224,9 +297,16 @@ async function runSync(imported) {
       removedIds.push(watch.id);
       continue;
     }
+    // The one conflict rule: a watch of this browser whose URL the account
+    // already has becomes that watch, and the account's label and paused
+    // state win. WD-82 (conflict handling for the import) changes it here.
     const twin = byUrl.get(watch.url);
     if (twin) {
       idMap.set(watch.id, twin.id);
+      continue;
+    }
+    if (keepOwn) {
+      aside.push(watch);
       continue;
     }
     if (rejected.has(watch.id)) {
@@ -238,7 +318,10 @@ async function runSync(imported) {
       localOnly.push(watch);
       continue;
     }
-    const result = await createWatch({ url: watch.url, label: watch.label, enabled: watch.enabled !== false });
+    const result = await createWatch(
+      { url: watch.url, label: watch.label, enabled: watch.enabled !== false },
+      connection,
+    );
     if (result.kind === "ok") {
       created.push(result.watch);
       idMap.set(watch.id, result.watch.id);
@@ -248,15 +331,24 @@ async function runSync(imported) {
       if (!byUrl.has(result.watch.url)) byUrl.set(result.watch.url, result.watch);
       continue;
     }
-    if (result.kind === "unauthorized") return result;
+    if (result.kind === "unauthorized" || result.kind === "connection-changed") return result;
     // A 400 will be a 400 next time too. Anything else (offline, rate
     // limit, unverified email) ends the uploads for this sync; the next
     // one offers what is left again.
     if (result.kind === "invalid") rejectedIds.push(watch.id);
-    else uploading = false;
+    else {
+      uploading = false;
+      stoppedBy = result;
+    }
     localOnly.push(watch);
   }
 
+  // What was read and uploaded was this connection's; it is not written into
+  // a browser that has since been connected to another account.
+  if (connection && !(await isCurrentConnection(connection))) return { kind: "connection-changed" };
+  // Before the copy loses them: a worker stopped between the two writes must
+  // not leave a watch neither in the list nor set aside.
+  if (aside.length > 0) await setAside(aside);
   await carryRunState(idMap, removedIds);
   await writeCopy([...listed.watches, ...created, ...localOnly], stored);
   await writeState({
@@ -265,7 +357,16 @@ async function runSync(imported) {
     lastSyncedAt: Date.now(),
     offline: false,
   });
-  return listed;
+  return {
+    ...listed,
+    outcome: {
+      created: created.length,
+      matched: idMap.size - created.length,
+      rejected: rejectedIds.length,
+      waiting: localOnly.length - rejectedIds.length,
+      stoppedBy,
+    },
+  };
 }
 
 // Brings the copy in step with WatchDesk. Sends nothing when not connected.
@@ -448,6 +549,34 @@ export function importAccountWatches(watches) {
       // For example chrome.storage.sync refusing a list over its quota.
       await setOffline(true).catch(() => {});
       return failed({ kind: "error" });
+    }
+  });
+}
+
+// The first step of importing this browser's own data (WD-81): a sync that
+// uploads every watch that is only in this browser, `own` (the ones set
+// aside by an earlier "no") included, on `connection` only. Safe to repeat:
+// a watch already uploaded is matched by its id or its URL, never made
+// twice. Resolves to { ok: true, created, matched, rejected, waiting,
+// stoppedBy } (see runSync), or { ok: false, kind, retryAfterSeconds?, error }
+// when WatchDesk did not give the account's list and nothing was done. Never
+// throws.
+export function uploadOwnWatches(own, connection) {
+  return withLock(async () => {
+    try {
+      const listed = await runSync(undefined, { own, connection });
+      if (listed?.kind === "ok") return { ok: true, ...listed.outcome };
+      const failure = listed || { kind: "connection-changed" };
+      return {
+        ok: false,
+        kind: failure.kind,
+        retryAfterSeconds: failure.retryAfterSeconds ?? null,
+        error: failureMessage(failure),
+      };
+    } catch {
+      // For example chrome.storage.sync refusing a list over its quota.
+      await setOffline(true).catch(() => {});
+      return { ok: false, kind: "error", retryAfterSeconds: null, error: failureMessage({ kind: "error" }) };
     }
   });
 }

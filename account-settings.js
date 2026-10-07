@@ -44,8 +44,8 @@
 //     What the four keys held just before a connection's first sync
 //     replaced them: the settings the user had chosen in this browser. A key
 //     missing from `settings` was never stored (the extension's default
-//     applied). Kept through a disconnect, for the import of local data
-//     (WD-81); nothing here reads it back. It is taken again at a later
+//     applied). Kept through a disconnect; local-import.js reads it when the
+//     user imports this browser's data after first declining (WD-81). It is taken again at a later
 //     connection only if the keys then hold something the account did not
 //     give (watchdeskSettingsCopy), that is, the user changed them while
 //     disconnected.
@@ -60,7 +60,7 @@
 // at the start (WD-110), so settings read from one account are never written
 // to, or copied for, another.
 
-import { captureConnection, isConnected, isCurrentConnection, SETTINGS_SYNC_KEY } from "./account-connection.js";
+import { captureConnection, isAccountActive, isCurrentConnection, SETTINGS_SYNC_KEY } from "./account-connection.js";
 import { readSettings, replaceSettings } from "./watchdesk-api.js";
 import { settingsProblem } from "./settings-limits.js";
 
@@ -199,19 +199,23 @@ async function noteAnswer(result, connection) {
 
 // ---------- what background.js and the popup ask ----------
 
+// Not while a freshly paired browser is still waiting for the user's answer
+// to the import question (WD-81): until then the settings are this
+// browser's own, and nothing is loaded over them.
 export function usesAccountSettings() {
-  return isConnected();
+  return isAccountActive();
 }
 
 // What the popup says about where the settings live:
 //   { mode: "local" }  not connected
 //   { mode: "account", lastSyncedAt, problem }
 export async function getSettingsSyncStatus() {
-  if (!(await isConnected())) return { mode: "local" };
+  if (!(await isAccountActive())) return { mode: "local" };
   return { mode: "account", ...(await readState()) };
 }
 
 async function runSync() {
+  if (!(await isAccountActive())) return;
   const connection = await captureConnection();
   if (!connection) return;
   try {
@@ -270,25 +274,48 @@ const failed = (result) => ({ ok: false, error: failureMessage(result) });
 // account holds, which is what the popup's controls go back to.
 export function saveAccountSettings(patch) {
   return withLock(async () => {
-    try {
-      const problem = settingsProblem(patch);
-      if (problem) return { ok: false, error: problem };
+    const result = await save(patch);
+    if (result.kind === "ok") return { ok: true };
+    return result.kind === "refused" ? { ok: false, error: result.message } : failed(result);
+  });
+}
 
-      const connection = await captureConnection();
-      if (!connection) return failed({ kind: "unauthorized" });
-      const result = await readModifyWrite(patch, connection);
-      if (result.kind !== "ok") {
-        if (result.current) await storeCopy(result.current, connection);
-        // After the copy, which records a sync: the line then says what
-        // stopped the write.
-        await noteAnswer(result, connection);
-        return failed(result);
-      }
-      const outcome = await storeCopy(result.settings, connection);
-      if (outcome === "stored") return { ok: true };
-      return failed({ kind: outcome === "gone" ? "connection-changed" : "error" });
-    } catch {
-      return failed({ kind: "error" });
+// The save itself. Resolves to { kind: "ok" }, { kind: "refused", message }
+// (a value WatchDesk would refuse; nothing was sent) or a failure as
+// watchdesk-api.js names it. `given` is the connection to save on; without
+// one it is the connection as it is now.
+async function save(patch, given) {
+  try {
+    const problem = settingsProblem(patch);
+    if (problem) return { kind: "refused", message: problem };
+
+    const connection = given ?? (await captureConnection());
+    if (!connection) return { kind: "unauthorized" };
+    const result = await readModifyWrite(patch, connection);
+    if (result.kind !== "ok") {
+      if (result.current) await storeCopy(result.current, connection);
+      // After the copy, which records a sync: the line then says what
+      // stopped the write.
+      await noteAnswer(result, connection);
+      return result;
     }
+    const outcome = await storeCopy(result.settings, connection);
+    if (outcome === "stored") return { kind: "ok" };
+    return { kind: outcome === "gone" ? "connection-changed" : "error" };
+  } catch {
+    return { kind: "error" };
+  }
+}
+
+// The last step of importing this browser's own data (WD-81): saves the
+// settings the user had chosen here in the account, on `connection` only, by
+// the same read-modify-write as any other change, so the watcher state
+// WatchDesk holds is sent back untouched. Resolves to what save() does, a
+// failure carrying `message`, the popup's words for it: the import has to
+// tell a refusal, which no retry changes, from an outage.
+export function importAccountSettings(patch, connection) {
+  return withLock(async () => {
+    const result = await save(patch, connection);
+    return result.kind === "ok" || result.kind === "refused" ? result : { ...result, message: failureMessage(result) };
   });
 }

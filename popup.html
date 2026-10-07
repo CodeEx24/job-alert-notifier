@@ -41,6 +41,24 @@
       </div>
     </section>
 
+    <!-- Import of this browser's own watches, feed and settings into the
+         account it has just been connected to (WD-81). Filled in by
+         popup-local-import.js: the question, the progress while it runs, and
+         how it ended. Hidden while there is nothing to say. The text is a
+         polite live region, like the account title; the popup's one
+         role="status" stays the sync line (WD-73). -->
+    <section id="local-import" class="local-import" aria-labelledby="local-import-title" tabindex="-1" hidden>
+      <h2 id="local-import-title" class="local-import-title"></h2>
+      <p id="local-import-text" class="local-import-text" aria-live="polite"></p>
+      <ul id="local-import-details" class="local-import-details"></ul>
+      <div class="local-import-actions">
+        <button id="local-import-accept" type="button" hidden>Import</button>
+        <button id="local-import-decline" type="button" class="secondary" hidden>Not now</button>
+        <button id="local-import-retry" type="button" hidden>Retry now</button>
+        <button id="local-import-dismiss" type="button" class="secondary" hidden>Close</button>
+      </div>
+    </section>
+
     <section id="settings-panel" class="settings-panel">
       <div class="settings-panel-header">
         <h2>Settings</h2>
@@ -123,6 +141,16 @@
           Back up every watch and setting to a file, or restore from one —
           handy before uninstalling or when moving to a new computer.
         </p>
+      </div>
+
+      <!-- The way back to the import question after "Not now" (WD-81).
+           Shown by popup-local-import.js while this browser still holds
+           data of its own that was not imported. -->
+      <div id="local-import-again-group" class="settings-group" hidden>
+        <button id="local-import-again" type="button" class="secondary settings-full-width-btn">
+          Import this browser's data into your account…
+        </button>
+        <p class="hint" id="local-import-again-hint"></p>
       </div>
 
       <div class="settings-group">

@@ -40,8 +40,9 @@ afterEach(() => {
 describe("background.js wiring", () => {
   it("registers the account listeners at the top level", () => {
     expect(env.chrome.tabs.onRemoved.listeners).toHaveLength(1);
-    // The job-check alarm listener plus the pairing backstop.
-    expect(env.chrome.alarms.onAlarm.listeners).toHaveLength(2);
+    // The job-check alarm listener, the pairing backstop and (WD-81) the
+    // import's.
+    expect(env.chrome.alarms.onAlarm.listeners).toHaveLength(3);
   });
 
   it("answers account-get-state and account-connect without the token or the poll secret", async () => {

@@ -19,8 +19,17 @@ const sentence = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 // What the line shows: null before the worker has said which mode it is,
 // else { tone, text }. `loading` is true while the popup is waiting for the
 // account's settings. Pure, so the tests can check every state.
-export function describeSettingsSync(status, { loading = false } = {}) {
+// `awaitingImport` (WD-81) is true while a freshly connected browser is
+// waiting for the user's answer to the import question: an account is
+// connected, and the settings are still this browser's.
+export function describeSettingsSync(status, { loading = false, awaitingImport = false } = {}) {
   if (!status) return null;
+  if (status.mode !== "account" && awaitingImport) {
+    return {
+      tone: "local",
+      text: `${sentence(SETTINGS)} stay in this browser only until you answer "Import your existing data" at the top of this popup.`,
+    };
+  }
   if (status.mode !== "account") {
     return {
       tone: "local",

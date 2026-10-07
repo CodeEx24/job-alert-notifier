@@ -29,6 +29,10 @@
 //   last-synced copy of the account's settings: getSettings() reads them as
 //   it always has, and every change to them goes through
 //   account-settings.js — see that file.
+//   A browser that has just been paired (WD-81) is not working with the
+//   account yet: until the user has answered the popup's "Import your
+//   existing data" question, everything above is as with no account
+//   connected — see local-import.js.
 
 import { SITES, siteForUrl, pickWatchTabFromCandidates } from "./sites.js";
 import {
@@ -67,6 +71,16 @@ import {
   saveAccountSettings,
   getSettingsSyncStatus,
 } from "./account-settings.js";
+import {
+  registerLocalImport,
+  prepareImportOffer,
+  getImportStatus,
+  acceptImport,
+  declineImport,
+  offerImportAgain,
+  dismissImport,
+  runImport,
+} from "./local-import.js";
 
 const ALARM_NAME = "check-jobs";
 const OFFSCREEN_URL = "offscreen.html";
@@ -1169,6 +1183,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   // is awaited only at the end, to keep the worker alive until it is done.
   // With no account connected it sends nothing.
   const accountCheck = refreshAccount().catch(() => {});
+  // WD-81: a browser paired since the last tick is settled first: asked
+  // about its own data (and then checked on its own list, below, with
+  // nothing synced), or found to have nothing to ask about.
+  await prepareImportOffer();
   // WD-54: bring the watch list in step with the connected account before
   // checking, so a watch added, paused or deleted on WatchDesk takes
   // effect on this very check. One request with a 10 s timeout, never a
@@ -1192,6 +1210,11 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   // running or paused.
   await sendWatcherState();
   await accountCheck;
+  // WD-81: the account may have been named just now, which settles a browser
+  // that was waiting for it; and an import that was stopped is carried on,
+  // if its wait is over.
+  await prepareImportOffer();
+  await runImport();
 });
 
 chrome.runtime.onInstalled.addListener(async (details) => {
@@ -1236,6 +1259,9 @@ chrome.runtime.onStartup.addListener(async () => {
   // WD-71: a paused browser has no alarm tick to do this on, so a state
   // WatchDesk has not got yet is sent again here.
   await sendWatcherState();
+  // WD-81: likewise an import that was under way when the browser closed.
+  await prepareImportOffer();
+  await runImport();
 });
 
 // WatchDesk account connection (WD-42): its own tab and alarm listeners,
@@ -1251,6 +1277,11 @@ configureWatchSync({ unsyncedFallback: () => [defaultWatch()] });
 // on WatchDesk.
 configureAccountSettings({ onCopyChanged: followSyncedInterval });
 
+// Import of this browser's own data (WD-81): its alarm listener, and it
+// carries on an import that was under way when the worker stopped. Must run
+// at the top level, like the listeners above.
+registerLocalImport();
+
 // How this browser stands against the connected account: the watch list
 // (WD-54), with it when listings last reached WatchDesk (WD-59), and the
 // watcher state WatchDesk could not be given, if any (WD-71).
@@ -1264,7 +1295,9 @@ async function getSyncStatus() {
 // What the popup renders: settings, run state, version, whether watching
 // is running or paused (WD-71), (WD-54, WD-59) how the watch list and the
 // listings stand against the connected account, and (WD-79) whether the
-// settings are this browser's own or the account's.
+// settings are this browser's own or the account's, and (WD-81) where the
+// import of this browser's own data stands: null when there is nothing to
+// say about it.
 async function getPopupState() {
   const settings = await getSettings();
   const runState = await getRunState();
@@ -1272,7 +1305,8 @@ async function getPopupState() {
   const watcher = { state: await getWatcherState() };
   const watchSync = await getSyncStatus();
   const settingsSync = await getSettingsSyncStatus();
-  return { settings, runState, version, watcher, watchSync, settingsSync };
+  const localImport = await getImportStatus();
+  return { settings, runState, version, watcher, watchSync, settingsSync, localImport };
 }
 
 // ---------- messages from popup.js ----------
@@ -1282,11 +1316,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     switch (message?.type) {
       case "get-state": {
         await ensureAlarmScheduled();
+        // WD-81: a browser paired since the popup was last open is settled
+        // here, so the popup that opens shows the question (or none).
+        await prepareImportOffer();
         sendResponse(await getPopupState());
         break;
       }
       case "check-now": {
         await ensureAlarmScheduled();
+        await prepareImportOffer();
         // WD-54: same as the alarm — check the account's current list,
         // with (WD-79) its current settings.
         await Promise.all([syncWatches().catch(() => {}), syncAccountSettings().catch(() => {})]);
@@ -1302,7 +1340,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case "sync-watches": {
         // WD-54: the popup asks for this when it opens, then re-reads the
         // state. Answers { mode: "local" } and sends nothing when no
-        // account is connected.
+        // account is connected, and (WD-81) while the import question is
+        // unanswered.
+        await prepareImportOffer();
         sendResponse(await syncWatches());
         // WD-71: after the answer, a watcher state WatchDesk has not got
         // yet is sent again.
@@ -1314,9 +1354,42 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         // panel is opened: one GET of the account's settings into the copy,
         // answered with the settings as they then stand. Sends nothing, and
         // answers with this browser's own settings, when no account is
-        // connected.
+        // connected, and (WD-81) while the import question is unanswered.
+        await prepareImportOffer();
         await syncAccountSettings();
         sendResponse(await settingsAnswer());
+        break;
+      }
+      // Import of this browser's own data (WD-81; local-import.js). An
+      // answer to the question changes whose the watch list and the settings
+      // are, so each is answered with the whole popup state, which also
+      // holds where the import stands.
+      case "local-import-accept": {
+        // Answered once the import has been recorded, not once it is done:
+        // the popup shows its progress from "local-import-changed".
+        await acceptImport();
+        sendResponse(await getPopupState());
+        await runImport({ force: true });
+        break;
+      }
+      case "local-import-decline": {
+        await declineImport();
+        sendResponse(await getPopupState());
+        break;
+      }
+      case "local-import-retry": {
+        sendResponse(await getPopupState());
+        await runImport({ force: true });
+        break;
+      }
+      case "local-import-again": {
+        await offerImportAgain();
+        sendResponse(await getPopupState());
+        break;
+      }
+      case "local-import-dismiss": {
+        await dismissImport();
+        sendResponse(await getPopupState());
         break;
       }
       case "set-watcher-state": {
@@ -1587,7 +1660,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         break;
       }
       case "account-refresh": {
-        sendResponse(await refreshAccount());
+        const state = await refreshAccount();
+        // WD-81: WatchDesk may just have said whose the token is, which is
+        // what the import question was waiting for.
+        await prepareImportOffer();
+        sendResponse(state);
         break;
       }
       case "account-connect": {

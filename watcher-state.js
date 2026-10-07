@@ -34,7 +34,13 @@
 // at the start, so settings read from one account are never written to
 // another.
 
-import { captureConnection, isConnected, isCurrentConnection, WATCHER_SYNC_KEY } from "./account-connection.js";
+import {
+  captureConnection,
+  isAccountActive,
+  isConnected,
+  isCurrentConnection,
+  WATCHER_SYNC_KEY,
+} from "./account-connection.js";
 import { changeAccountSettings } from "./account-settings.js";
 
 export const WATCHER_STATE_KEY = "watcherState";
@@ -97,7 +103,9 @@ async function sendState(state, connection) {
 
 async function runReflect() {
   const connection = await captureConnection();
-  if (!connection) return false;
+  // WD-81: nothing is sent to a freshly paired account before the user has
+  // answered the import question.
+  if (!connection || !(await isAccountActive())) return false;
 
   const state = await getWatcherState();
   const before = await readRecord();

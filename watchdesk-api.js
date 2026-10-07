@@ -30,8 +30,9 @@
 // GET /api/auth/device/poll — docs/tickets/WD-41.md; GET
 // /api/devices/current — docs/tickets/WD-45.md; GET and POST /api/watches,
 // PATCH and DELETE /api/watches/[id] — docs/tickets/WD-52.md; POST
-// /api/listings/ingest — docs/tickets/WD-57.md; GET and PUT /api/settings —
-// docs/tickets/WD-56.md and WD-71.md.
+// /api/listings/ingest — docs/tickets/WD-57.md; PATCH /api/listings/[id] —
+// docs/tickets/WD-67.md; GET and PUT /api/settings — docs/tickets/WD-56.md
+// and WD-71.md.
 
 import { WATCHDESK_ORIGIN } from "./config.js";
 
@@ -334,7 +335,10 @@ function validationMessage(body) {
 //   the account's email is not verified) | { kind: "not-found" } (404: no
 //   such watch, or not this account's) | { kind: "rate-limited",
 //   retryAfterSeconds } | { kind: "unreachable" } | { kind: "error", status }
+//   | { kind: "connection-changed" } (only for a call bound to a
+//   `connection`: the token is no longer that connection's, nothing was sent)
 function watchFailure(response) {
+  if (response.connectionChanged) return { kind: "connection-changed" };
   const failure = commonFailure(response);
   if (failure) return failure;
   if (response.status === 401) return { kind: "unauthorized" };
@@ -354,8 +358,15 @@ function watchResult(response, successStatus) {
 // A list holding anything that is not a watch is an error as a whole: the
 // caller removes what the list leaves out, so it must not act on a broken
 // one.
-export async function listWatches() {
-  const response = await authorizedRequest("/api/watches", { idempotent: false, timeoutMs: WATCH_LIST_TIMEOUT_MS });
+// `connection` (WD-81), here and in createWatch(), binds the call to one
+// token: the import of a browser's own watches must not go on into an
+// account that connected after it began.
+export async function listWatches(connection) {
+  const response = await authorizedRequest("/api/watches", {
+    idempotent: false,
+    timeoutMs: WATCH_LIST_TIMEOUT_MS,
+    connection,
+  });
   if (response.status !== 200) return watchFailure(response);
   const raw = response.body?.watches;
   if (!Array.isArray(raw)) return { kind: "error", status: 200 };
@@ -366,11 +377,11 @@ export async function listWatches() {
 
 // POST /api/watches → { kind: "ok", watch } or a failure. The server derives
 // the site from the URL and may rewrite the URL (LinkedIn).
-export async function createWatch({ url, label, enabled }) {
+export async function createWatch({ url, label, enabled }, connection) {
   const body = { url };
   if (label) body.label = label;
   if (typeof enabled === "boolean") body.enabled = enabled;
-  return watchResult(await authorizedRequest("/api/watches", { method: "POST", body }), 201);
+  return watchResult(await authorizedRequest("/api/watches", { method: "POST", body, connection }), 201);
 }
 
 // PATCH /api/watches/[id] with any of { label, enabled } →
@@ -491,4 +502,25 @@ export async function ingestListings(watchId, listings, connection) {
     received: typeof response.body?.received === "number" ? response.body.received : listings.length,
     inserted: inserted.filter((row) => typeof row?.id === "string" && typeof row?.jobId === "string"),
   };
+}
+
+// ---------- a listing's status (WD-81; contract in WD-67) ----------
+
+// PATCH /api/listings/[id] with { status } → { kind: "ok" } or a failure,
+// the same kinds as a watch call. `listingId` is WatchDesk's id for the
+// listing (ingestListings()'s `inserted[].id`); 404 ("not-found") is a
+// listing the account does not have. Only the import of a browser's own feed
+// calls it, to carry an "applied" mark over.
+//
+// It retries (RETRY_POLICY): giving a listing the status it already has
+// changes nothing on WatchDesk, so a repeat is harmless. `connection` binds
+// it to one token, like ingestListings().
+export async function setListingStatus(listingId, status, connection) {
+  const response = await authorizedRequest(`/api/listings/${encodeURIComponent(listingId)}`, {
+    method: "PATCH",
+    body: { status },
+    idempotent: true,
+    connection,
+  });
+  return response.status === 200 ? { kind: "ok" } : watchFailure(response);
 }

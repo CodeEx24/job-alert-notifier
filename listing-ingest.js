@@ -103,6 +103,7 @@
 import {
   captureConnection,
   getAccountOwner,
+  isAccountActive,
   isConnected,
   LISTING_QUEUE_KEY,
   LISTING_SYNC_KEY,
@@ -413,7 +414,9 @@ async function runCycle(checked) {
   // The connection every request of this cycle is bound to: none of them
   // can go out with a token stored after this point.
   const connection = await captureConnection();
-  if (!connection) return { status: "not-connected", sent: 0, unsent: 0 };
+  // WD-81: nor while a freshly paired browser is waiting for the user's
+  // answer to the import question; nothing goes to the account before it.
+  if (!connection || !(await isAccountActive())) return { status: "not-connected", sent: 0, unsent: 0 };
 
   // Whose listings these are. Null while the account's email is not known:
   // the cycle's own listings are still sent, but nothing is queued or
