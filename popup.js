@@ -1580,6 +1580,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     ackListingDrops(lastState.watchSync);
   });
 
+  // WD-80: the worker has just fetched the connected account's settings for
+  // a check (an alarm tick while the popup is open). They are shown like the
+  // answer to a load the popup asked for itself: a keyword being typed and a
+  // change still being saved are left alone.
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type !== "settings-changed" || !lastState) return;
+    applySettingsAnswer(message);
+  });
+
   // Restore the last search/filter/sort choice before the first render, so
   // reopening the popup shows the feed the way it was left instead of
   // flashing "no filters" for a moment and then re-applying.

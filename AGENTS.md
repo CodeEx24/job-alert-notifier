@@ -65,6 +65,17 @@ this file mirrors its must-follow rules.
   `saveAccountSettings()`. The settings from before the first sync are kept
   in `chrome.storage.local`, uploaded only by the import the user asked for
   (WD-81).
+- **A web change reaches the extension on its next check, and only then**
+  (WD-80): no settings poll of its own; the cycle's one GET of
+  `/api/settings` is in the alarm listener before `runAllChecks()`, and
+  nothing a cycle needs lives in a module variable. When that GET changes
+  what the popup shows the worker sends `settings-changed` and an open popup
+  applies it through `applySettingsAnswer()`. Paused, nothing is fetched. A
+  keyword-filter change is applied to the filter the account holds at that
+  moment (`saveAccountTitleFilter()`), never sent as the popup's whole list,
+  and the local copy is never the PUT body. `watcherState` is still never
+  read back. The route has no version check: do not invent a client-only
+  conflict scheme (`docs/tickets/WD-80.md`).
 - **A freshly paired browser syncs nothing until the user has answered the
   import question** (WD-81): `completePairing()` writes `watchdeskImport`
   with the token, and while it is `connecting` or `offered` every module is in

@@ -486,7 +486,10 @@ describe("a check cycle posts what it read to WatchDesk (WD-59)", () => {
     env.chrome.runtime.getContexts = vi.fn(async () => [{}]);
     env.chrome.runtime.sendMessage.mockImplementation(async (message) => {
       if (message.type === "parse-html") return { ok: true, jobs: structuredClone(page) };
-      if (message.type !== "play-sound") popupMessages.push(message);
+      // WD-80: the first tick of a connection also loads the account's
+      // settings and tells the popup they changed; that message is
+      // tests/settings-two-way.test.js's subject, not this block's.
+      if (message.type !== "play-sound" && message.type !== "settings-changed") popupMessages.push(message);
       return undefined;
     });
   });

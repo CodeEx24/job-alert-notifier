@@ -41,6 +41,7 @@ const FROM_WORKER = new Set([
   "watch-sync-changed",
   "account-state-changed",
   "local-import-changed",
+  "settings-changed",
 ]);
 
 export const OJ_URL = "https://www.onlinejobs.ph/jobseekers/jobsearch";

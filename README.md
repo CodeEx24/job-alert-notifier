@@ -201,6 +201,14 @@ sound, Mute and the keyword filter. They are loaded from WatchDesk when the
 popup and the Settings panel open and on every check, and a change is saved
 there straight away, so the web app's Settings page and this popup always
 edit the same ones. A line at the top of Settings says where they are saved.
+A setting changed on the web therefore takes effect at this browser's next
+check, at most one check interval later (30 minutes at the longest setting),
+with the popup closed; if the popup is open, its controls change when that
+check runs. A setting changed here is on the web's Settings page the next
+time that page loads. While watching is paused there are no checks, so a web
+change arrives when the popup is opened or watching is started. Adding or
+removing a keyword here changes only that keyword in your account, so
+keywords added on the web in the meantime are kept.
 If WatchDesk can't be reached, checks keep running on the settings last
 loaded and a change is refused with the reason, the control going back to
 what your account has; nothing is queued to be sent later. The settings you
