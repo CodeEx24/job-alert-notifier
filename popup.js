@@ -4,6 +4,7 @@ import { initAccountCard } from "./popup-account.js";
 import { renderWatchSync, renderWatchChange } from "./popup-watch-sync.js";
 import { initWatcherControl, renderWatcher } from "./popup-watcher.js";
 import { renderSettingsSync, renderSettingsChange } from "./popup-settings-sync.js";
+import { initLocalImport, renderLocalImport } from "./popup-local-import.js";
 
 // Must match background.js's own ALARM_NAME — they're separate module
 // graphs (background service worker vs. popup page) with no shared import,
@@ -79,7 +80,12 @@ let pendingSettingChanges = 0;
 let settingsLoads = 0;
 
 function renderSettingsNote() {
-  renderSettingsSync(lastState?.settingsSync, { loading: settingsLoads > 0 });
+  renderSettingsSync(lastState?.settingsSync, {
+    loading: settingsLoads > 0,
+    // WD-81: connected, and the settings are still this browser's until the
+    // import question is answered.
+    awaitingImport: lastState?.localImport?.phase === "offered" && !lastState.localImport.again,
+  });
 }
 
 function renderSettingControls() {
@@ -1403,6 +1409,7 @@ function renderAll() {
   if (!lastState) return;
   renderWatchSync(lastState.watchSync);
   ackListingDrops(lastState.watchSync);
+  renderLocalImport(lastState.localImport);
   renderWatcher(lastState.watcher);
   renderWatchList(lastState.settings, lastState.runState);
   renderFeed(lastState.runState);
@@ -1504,6 +1511,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     const changed = accountStatus !== null && status !== accountStatus;
     accountStatus = status;
     if (changed && lastState) {
+      // WD-81: the import card belongs to the connection that just ended.
+      if (lastState.localImport) refresh().catch(() => {});
       syncWatchesAndRender().catch(() => {});
       // WD-79: and so do the settings; a newly connected account's are
       // loaded now.
@@ -1520,6 +1529,45 @@ document.addEventListener("DOMContentLoaded", async () => {
       lastState = state;
       renderAll();
     },
+  });
+
+  // WD-81: "Import your existing data". An answer to it changes whose the
+  // watch list and the settings are, so the worker's answer is the whole
+  // popup state. After "Not now" the account's list and settings are then
+  // fetched, as on a new connection; after "Import" the import itself does
+  // both, and says so as it goes (below).
+  initLocalImport({
+    send,
+    onState: (state, type) => {
+      lastState = state;
+      renderAll();
+      if (type === "local-import-decline") {
+        syncWatchesAndRender().catch(() => {});
+        loadAccountSettings().catch(() => {});
+      }
+    },
+  });
+  // The worker says where the import stands as it goes: the question
+  // appearing once WatchDesk has named the account, each step's progress,
+  // and the end. A new phase or step changed more than the card (the watch
+  // list has the account's ids after the first step), so the state is read
+  // again; anything else only moves the card's numbers.
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type !== "local-import-changed" || !lastState) return;
+    const before = lastState.localImport;
+    const now = message.localImport;
+    lastState.localImport = now;
+    if (before?.phase === now?.phase && before?.step === now?.step) {
+      renderLocalImport(now);
+      return;
+    }
+    refresh()
+      .then(() => {
+        // The import has ended: the settings on show are the account's now.
+        if (now?.phase === "done") return loadAccountSettings({ force: true });
+        return undefined;
+      })
+      .catch(() => {});
   });
 
   // WD-59: the worker says when a check's listings have (or have not)
@@ -1735,9 +1783,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     // WD-54, WD-79: a connected account's watches and settings are not this
     // browser's to clear.
     const account = lastState?.watchSync?.mode === "account";
+    // WD-81: the watches set aside by "Not now" are this browser's own, and
+    // a reset clears them like the rest of what is only here.
+    const setAside = lastState?.localImport?.phase === "declined" && lastState.localImport.watches > 0;
     const confirmed = confirm(
       account
-        ? "Reset Job Alert Notifier? This clears the whole feed in this browser. Your watches and settings are kept: they belong to your WatchDesk account. This can't be undone."
+        ? `Reset Job Alert Notifier? This clears the whole feed in this browser${
+            setAside ? ", and the watches it kept from before it was connected" : ""
+          }. Your watches and settings are kept: they belong to your WatchDesk account. This can't be undone.`
         : "Reset Job Alert Notifier? This clears every watch, the whole feed, and all settings back to defaults. This can't be undone — export a backup first if you want to keep any of it."
     );
     if (!confirmed) return;

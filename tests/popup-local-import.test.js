@@ -1,0 +1,471 @@
+// WD-81: the popup's "Import your existing data" card (popup-local-import.js)
+// in the real popup, against the real service worker and the fake WatchDesk:
+// the question in plain words, the two answers, the progress, how it ends,
+// and the way back to the question from the settings panel.
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { startExtension, NOW, WATCHES } from "./helpers/popup-harness.js";
+import { TEST_TOKEN } from "./helpers/fake-watchdesk.js";
+import { describeImport, describeImportAgain } from "../popup-local-import.js";
+
+const [OJ, GD] = WATCHES;
+
+const entry = (watch, n, extra = {}) => ({
+  id: `${watch.id}:${n}`,
+  sourceKey: `${watch.siteId}:${n}`,
+  siteId: watch.siteId,
+  watchId: watch.id,
+  watchLabel: watch.label,
+  title: `Job ${n}`,
+  url: `https://jobs.example.com/view/${n}`,
+  postedRaw: null,
+  postedAt: null,
+  postedApprox: false,
+  salaryRaw: null,
+  easyApply: false,
+  workplaceType: null,
+  detectedAt: NOW - n * 60000,
+  visited: false,
+  applied: false,
+  appliedAt: null,
+  ...extra,
+});
+
+const COUNTS = {
+  watchesUploaded: 0,
+  watchesMatched: 0,
+  watchesRefused: 0,
+  listingsUploaded: 0,
+  listingsNew: 0,
+  listingsNoWatch: 0,
+  listingsWatchGone: 0,
+  listingsInvalid: 0,
+  listingsRefused: 0,
+  appliedMarked: 0,
+  appliedNotCarried: 0,
+  settingsSaved: [],
+  settingsRefused: [],
+};
+
+let ext;
+let page;
+afterEach(() => ext?.dispose());
+
+const drive = async (ms = 5 * 60 * 1000) => {
+  await vi.advanceTimersByTimeAsync(ms);
+  await ext.settle();
+};
+const dataCalls = () => [
+  ...ext.api.watchCalls(),
+  ...ext.api.ingestCalls(),
+  ...ext.api.statusCalls(),
+  ...ext.api.settingsCalls(),
+];
+const shownButtons = () =>
+  [...page.$("local-import").querySelectorAll("button")].filter((b) => !b.hidden).map((b) => b.textContent.trim());
+const details = () => [...page.$("local-import-details").children].map((item) => item.textContent);
+
+// A browser in use, paired for the first time, with the popup open.
+async function pairedPopup({ feed = [entry(OJ, 1, { applied: true }), entry(GD, 2)], sync = { soundId: "soft" } } = {}) {
+  ext = await startExtension({ sync, local: { feed } });
+  await ext.pair();
+  page = await ext.openPopup();
+  return page;
+}
+
+describe("what the card says (describeImport)", () => {
+  it("shows nothing when there is nothing to say", () => {
+    expect(describeImport(null)).toBeNull();
+    expect(describeImport({ phase: "checking" })).toBeNull();
+    expect(describeImport({ phase: "declined", available: true, watches: 1, listings: 0, settings: false })).toBeNull();
+  });
+
+  it("the question says what would be uploaded, what No means, and that it can take a minute", () => {
+    const view = describeImport({ phase: "offered", again: false, watches: 3, listings: 41, settings: true });
+    expect(view).toMatchObject({ tone: "neutral", title: "Import your existing data", buttons: ["accept", "decline"] });
+    expect(view.text).toBe(
+      "This browser has 3 watches, 41 listings and your settings of its own. Import them into your WatchDesk account? It can take a minute.",
+    );
+    expect(view.details).toEqual([
+      "Import uploads them to your account. They stay in this browser too.",
+      // Said before the choice, in plain words.
+      "Imported listings will be dated the day of the import on WatchDesk, not the day this browser found them. The date each job was posted is kept.",
+      "Not now keeps everything in this browser and starts the account without it. The watch list here then shows your account's watches; this browser's own are kept, and you can import them later from Settings.",
+      "Until you choose, nothing is sent to WatchDesk and this browser keeps checking its own watches.",
+    ]);
+  });
+
+  it("says nothing about dates when there is no listing to import, and says it in the second question too", () => {
+    const dated = (status) => describeImport({ phase: "offered", ...status }).details.filter((line) => line.includes("dated the day of the import"));
+    expect(dated({ again: false, watches: 2, listings: 0, settings: true })).toEqual([]);
+    expect(dated({ again: true, watches: 2, listings: 3, settings: false })).toHaveLength(1);
+    expect(dated({ again: true, watches: 2, listings: 0, settings: false })).toEqual([]);
+  });
+
+  it("names only what there is, in the singular where there is one", () => {
+    const text = (status) => describeImport({ phase: "offered", again: false, ...status }).text;
+    expect(text({ watches: 1, listings: 1, settings: false })).toContain("has 1 watch and 1 listing of its own");
+    expect(text({ watches: 2, listings: 0, settings: false })).toContain("has 2 watches of its own");
+    expect(text({ watches: 1, listings: 0, settings: true })).toContain("has 1 watch and your settings of its own");
+  });
+
+  it("the progress names the step and, for the feed, how far it is", () => {
+    const at = (status) => describeImport({ phase: "importing", problem: null, counts: COUNTS, ...status });
+    expect(at({ step: "watches" })).toMatchObject({ title: "Importing your data…", text: "Uploading your watches…", buttons: [] });
+    expect(at({ step: "listings", listingsDone: 0, listingsTotal: null }).text).toBe("Uploading your listings…");
+    expect(at({ step: "listings", listingsDone: 200, listingsTotal: 730 }).text).toBe("Uploading your listings: 200 of 730…");
+    expect(at({ step: "applied", appliedDone: 3, appliedTotal: 12 }).text).toBe("Marking the listings you applied to: 3 of 12…");
+    expect(at({ step: "settings" }).text).toBe("Saving your settings…");
+  });
+
+  it("a stopped import says why, where, that it will be tried again, and offers Retry", () => {
+    expect(
+      describeImport({
+        phase: "importing",
+        step: "listings",
+        listingsDone: 200,
+        listingsTotal: 730,
+        problem: { message: "Can't reach WatchDesk.", retryAt: NOW + 60000 },
+        counts: COUNTS,
+      }),
+    ).toEqual({
+      tone: "problem",
+      title: "The import has stopped for now",
+      text: "Can't reach WatchDesk. It stopped while uploading your listings, and will be tried again automatically. Nothing is lost.",
+      details: [],
+      buttons: ["retry"],
+    });
+  });
+
+  it("a clean end says what was uploaded, and that WatchDesk dates the listings from today", () => {
+    expect(
+      describeImport({
+        phase: "done",
+        counts: { ...COUNTS, watchesUploaded: 4, watchesMatched: 1, listingsUploaded: 41, listingsNew: 41, appliedMarked: 2, settingsSaved: ["soundId"] },
+      }),
+    ).toEqual({
+      tone: "ok",
+      title: "Your data was imported",
+      text: "4 watches uploaded, 1 watch was already in your account, 41 listings uploaded, 2 marked applied, your settings saved.",
+      details: [
+        "WatchDesk shows imported listings as found today: it doesn't take the date this browser found them.",
+        "Everything is still in this browser too.",
+      ],
+      buttons: ["dismiss"],
+    });
+  });
+
+  it("an end with something left out says what, each in its own line", () => {
+    const view = describeImport({
+      phase: "done",
+      counts: {
+        ...COUNTS,
+        watchesUploaded: 2,
+        watchesRefused: 1,
+        listingsUploaded: 10,
+        listingsNoWatch: 2,
+        listingsWatchGone: 1,
+        listingsInvalid: 1,
+        listingsRefused: 1,
+        appliedNotCarried: 2,
+        settingsRefused: [{ setting: "titleFilter", reason: "Keep at most 100 keywords" }],
+      },
+    });
+    expect(view).toMatchObject({ tone: "problem", title: "Your data was imported, with some left out", buttons: ["dismiss"] });
+    expect(view.details).toEqual([
+      "WatchDesk didn't accept 1 watch. It stays in this browser.",
+      "3 listings not uploaded: their watch isn't on WatchDesk. They stay in this browser.",
+      "WatchDesk couldn't store 2 listings.",
+      "2 applied marks not carried over: WatchDesk already had those listings, and its own status was left as it is.",
+      "The keyword filter wasn't imported: Keep at most 100 keywords",
+      "Everything is still in this browser too.",
+    ]);
+  });
+
+  it("an import that found nothing new says so", () => {
+    expect(describeImport({ phase: "done", counts: COUNTS }).text).toBe("There was nothing WatchDesk didn't already have.");
+  });
+
+  it("the settings panel's row is there only after a No, while something could still be imported", () => {
+    expect(describeImportAgain({ phase: "declined", available: true, watches: 5, listings: 2, settings: true })).toBe(
+      "This browser kept 5 watches, 2 listings and your settings from before it was connected. Nothing of it was uploaded.",
+    );
+    expect(describeImportAgain({ phase: "declined", available: false, watches: 0, listings: 0, settings: false })).toBeNull();
+    expect(describeImportAgain({ phase: "offered", again: true, watches: 5, listings: 2, settings: true })).toBeNull();
+    expect(describeImportAgain(null)).toBeNull();
+  });
+});
+
+describe("in the popup, after a first pairing", () => {
+  it("asks the question under the account card, and nothing has been sent", async () => {
+    await pairedPopup();
+
+    expect(page.$("local-import").hidden).toBe(false);
+    expect(page.text("local-import-title")).toBe("Import your existing data");
+    expect(page.text("local-import-text")).toBe(
+      "This browser has 5 watches, 2 listings and your settings of its own. Import them into your WatchDesk account? It can take a minute.",
+    );
+    expect(details()).toHaveLength(4);
+    expect(details()[1]).toContain("Imported listings will be dated the day of the import on WatchDesk");
+    expect(shownButtons()).toEqual(["Import", "Not now"]);
+    // Connected, by name, and not syncing: no sync line, the browser's own
+    // watches in the list, and the settings panel says why.
+    expect(page.text("account-title")).toBe("ada@example.com");
+    expect(page.$("watch-sync-status").hidden).toBe(true);
+    expect(page.labels()).toEqual(WATCHES.map((w) => w.label));
+    expect(page.text("settings-sync-note")).toBe(
+      'The check interval, alert sound, mute and keyword filter stay in this browser only until you answer "Import your existing data" at the top of this popup.',
+    );
+    expect(page.$("local-import-again-group").hidden).toBe(true);
+
+    expect(page.opening.filter((m) => m.type.startsWith("local-import-"))).toEqual([]);
+    expect(dataCalls()).toEqual([]);
+    expect(page.document.documentElement.innerHTML).not.toContain(TEST_TOKEN);
+  });
+
+  it("Import: one click, the progress, then what was done; Close puts the card away", async () => {
+    await pairedPopup();
+    ext.take();
+
+    await page.click(page.$("local-import-accept"));
+    expect(ext.take().filter((m) => m.type.startsWith("local-import-"))).toEqual([{ type: "local-import-accept" }]);
+    expect(page.text("local-import-title")).toBe("Importing your data…");
+    expect(shownButtons()).toEqual([]);
+
+    await drive();
+
+    expect(page.text("local-import-title")).toBe("Your data was imported");
+    expect(page.text("local-import-text")).toBe("5 watches uploaded, 2 listings uploaded, 1 marked applied, your settings saved.");
+    expect(details()).toEqual([
+      "WatchDesk shows imported listings as found today: it doesn't take the date this browser found them.",
+      "Everything is still in this browser too.",
+    ]);
+    expect(page.$("local-import").dataset.tone).toBe("ok");
+    expect(shownButtons()).toEqual(["Close"]);
+    // The popup is now an ordinary connected one: the account's list (the
+    // same five watches), the sync line, the account's settings.
+    expect(page.labels()).toEqual(WATCHES.map((w) => w.label));
+    expect(page.$("watch-sync-status").hidden).toBe(false);
+    expect(page.text("settings-sync-note")).toContain("are saved in your WatchDesk account.");
+    expect(page.$("sound").value).toBe("soft");
+    expect(ext.api.watches).toHaveLength(5);
+    expect(ext.api.listings).toHaveLength(2);
+
+    await page.click(page.$("local-import-dismiss"));
+    expect(page.$("local-import").hidden).toBe(true);
+    // And it does not come back.
+    page = await ext.openPopup();
+    expect(page.$("local-import").hidden).toBe(true);
+    expect(page.$("local-import-again-group").hidden).toBe(true);
+  });
+
+  it("shows the progress as it goes", async () => {
+    const feed = Array.from({ length: 450 }, (_, i) => entry(OJ, 1000 + i));
+    await pairedPopup({ feed, sync: {} });
+    // The second request waits, so the popup is seen mid-import.
+    let release;
+    ext.api.setIngestRoute((request) =>
+      request.body.listings[0].id === "1200" && !release
+        ? new Promise((resolve) => {
+            release = () => resolve(undefined);
+          }).then(() => ext.api.json(200, { watchId: request.body.watchId, siteId: "onlinejobsph", received: 200, inserted: [] }))
+        : undefined,
+    );
+
+    await page.click(page.$("local-import-accept"));
+    await drive(5000);
+    expect(page.text("local-import-text")).toBe("Uploading your listings: 200 of 450…");
+    // The watches went up first; the list already shows the account's.
+    expect(ext.api.watches).toHaveLength(5);
+
+    release();
+    await drive();
+    expect(page.text("local-import-title")).toBe("Your data was imported");
+  });
+
+  it("Not now: the card goes, nothing was uploaded, the list is the account's, and Settings offers the import", async () => {
+    await pairedPopup();
+    ext.api.addWatch({ url: "https://www.upwork.com/nx/search/jobs/?q=vue", label: "Upwork Vue" });
+    ext.take();
+
+    await page.click(page.$("local-import-decline"));
+    await drive(1000);
+
+    expect(page.$("local-import").hidden).toBe(true);
+    expect(ext.api.watchCalls("POST")).toEqual([]);
+    expect(ext.api.ingestCalls()).toEqual([]);
+    expect(page.labels()).toEqual(["Upwork Vue"]);
+    expect(page.$("watch-sync-status").hidden).toBe(false);
+    expect(page.text("settings-sync-note")).toContain("are saved in your WatchDesk account.");
+    // The feed is this browser's, as it was.
+    expect(page.document.querySelectorAll("#feed-list .feed-item")).toHaveLength(2);
+
+    expect(page.$("local-import-again-group").hidden).toBe(false);
+    expect(page.text("local-import-again")).toBe("Import this browser's data into your account…");
+    expect(page.text("local-import-again-hint")).toBe(
+      "This browser kept 5 watches, 2 listings and your settings from before it was connected. Nothing of it was uploaded.",
+    );
+  });
+
+  it("Reset, after Not now, says it clears the watches that were kept, and does", async () => {
+    await pairedPopup();
+    await page.click(page.$("local-import-decline"));
+    await drive(1000);
+    page = await ext.openPopup();
+    await page.click(page.$("settings-toggle"));
+
+    await page.click(page.$("reset-extension"));
+
+    expect(page.confirm).toHaveBeenCalledWith(
+      "Reset Job Alert Notifier? This clears the whole feed in this browser, and the watches it kept from before it was connected. Your watches and settings are kept: they belong to your WatchDesk account. This can't be undone.",
+    );
+    expect(ext.local().watchdeskWatchesBeforeConnect).toBeUndefined();
+    expect(ext.local().watchdeskImport).toBeUndefined();
+    expect(page.$("local-import-again-group").hidden).toBe(true);
+    expect(ext.api.watchCalls("POST")).toEqual([]);
+  });
+
+  it("the way back: Settings asks again, about what was kept, and Import then uploads it", async () => {
+    await pairedPopup();
+    await page.click(page.$("local-import-decline"));
+    await drive(1000);
+    page = await ext.openPopup();
+    await page.click(page.$("settings-toggle"));
+    ext.take();
+
+    await page.click(page.$("local-import-again"));
+    expect(ext.take().filter((m) => m.type.startsWith("local-import-"))).toEqual([{ type: "local-import-again" }]);
+    expect(page.$("local-import").hidden).toBe(false);
+    expect(page.text("local-import-title")).toBe("Import this browser's earlier data");
+    expect(page.text("local-import-text")).toBe(
+      "This browser kept 5 watches, 2 listings and your settings from before it was connected. Import them into your WatchDesk account? It can take a minute.",
+    );
+    expect(shownButtons()).toEqual(["Import", "Not now"]);
+    expect(page.$("local-import-again-group").hidden).toBe(true);
+    // Asking again holds nothing: the popup is still the account's.
+    expect(page.$("watch-sync-status").hidden).toBe(false);
+
+    await page.click(page.$("local-import-accept"));
+    await drive();
+
+    expect(page.text("local-import-title")).toBe("Your data was imported");
+    expect(page.labels()).toEqual(WATCHES.map((w) => w.label));
+    expect(ext.api.listings).toHaveLength(2);
+    expect(page.$("local-import-again-group").hidden).toBe(true);
+  });
+
+  it("a stopped import says so in the popup, and Retry now carries it on", async () => {
+    await pairedPopup();
+    ext.api.setWatchRoute(ext.api.networkError);
+    await page.click(page.$("local-import-accept"));
+    await drive(1000);
+
+    expect(page.text("local-import-title")).toBe("The import has stopped for now");
+    expect(page.text("local-import-text")).toBe(
+      "Can't reach WatchDesk. It stopped while uploading your watches, and will be tried again automatically. Nothing is lost.",
+    );
+    expect(page.$("local-import").dataset.tone).toBe("problem");
+    expect(shownButtons()).toEqual(["Retry now"]);
+    // Nothing went anywhere: the list is still this browser's own.
+    expect(page.labels()).toEqual(WATCHES.map((w) => w.label));
+
+    ext.api.setWatchRoute(() => undefined);
+    ext.take();
+    await page.click(page.$("local-import-retry"));
+    expect(ext.take().filter((m) => m.type.startsWith("local-import-"))).toEqual([{ type: "local-import-retry" }]);
+    await drive();
+    expect(page.text("local-import-title")).toBe("Your data was imported");
+  });
+
+  it("is still asking when the popup is opened again, and while it is importing shows where it is", async () => {
+    await pairedPopup();
+    page = await ext.openPopup();
+    expect(page.text("local-import-title")).toBe("Import your existing data");
+
+    // Stopped by an outage, then the popup is closed and opened.
+    ext.api.setWatchRoute(ext.api.networkError);
+    await page.click(page.$("local-import-accept"));
+    await drive(1000);
+    page = await ext.openPopup();
+    expect(page.text("local-import-title")).toBe("The import has stopped for now");
+    expect(shownButtons()).toEqual(["Retry now"]);
+  });
+
+  it("can be answered from the keyboard, and keeps the focus in the card when its buttons change", async () => {
+    await pairedPopup();
+    const accept = page.$("local-import-accept");
+    const decline = page.$("local-import-decline");
+    // Two real buttons, in reading order, in the tab order.
+    for (const button of [accept, decline]) {
+      expect(button.tagName).toBe("BUTTON");
+      expect(button.tabIndex).toBe(0);
+      expect(button.disabled).toBe(false);
+    }
+    expect(accept.compareDocumentPosition(decline) & 4).toBe(4);
+
+    accept.focus();
+    expect(page.document.activeElement).toBe(accept);
+    // Enter or Space on a focused button is its click.
+    await page.click(accept);
+    // The button is gone while the import runs; the focus is on the card,
+    // not lost to the top of the page.
+    expect(accept.hidden).toBe(true);
+    expect(page.document.activeElement).toBe(page.$("local-import"));
+
+    // The pressed button is never disabled: a browser would take the focus
+    // from it before the card could hand it on.
+    expect(accept.disabled).toBe(false);
+
+    // When the card has a button again, the focus is on it.
+    await drive();
+    const close = page.$("local-import-dismiss");
+    expect(close.hidden).toBe(false);
+    expect(page.document.activeElement).toBe(close);
+  });
+
+  it("answers once to a double click", async () => {
+    await pairedPopup();
+    ext.take();
+    const accept = page.$("local-import-accept");
+    accept.click();
+    accept.click();
+    await drive();
+
+    expect(ext.take().filter((m) => m.type === "local-import-accept")).toHaveLength(1);
+    expect(ext.api.watches).toHaveLength(5);
+  });
+
+  it("writes what WatchDesk says as text, never as markup", async () => {
+    await pairedPopup({ sync: { soundId: "soft" } });
+    ext.api.setSettingsRoute((request) =>
+      request.method === "PUT"
+        ? ext.api.json(400, { error: "Check the highlighted fields.", fieldErrors: { soundId: ['<img src=x onerror="alert(1)"> not a sound'] } })
+        : undefined,
+    );
+    await page.click(page.$("local-import-accept"));
+    await drive();
+
+    expect(page.text("local-import-title")).toBe("Your data was imported, with some left out");
+    expect(details()).toContain('The alert sound wasn\'t imported: <img src=x onerror="alert(1)"> not a sound');
+    expect(page.$("local-import").querySelector("img")).toBeNull();
+  });
+});
+
+describe("in the popup, with nothing to ask", () => {
+  it("shows no card to a browser with no account connected, and sends nothing for it", async () => {
+    ext = await startExtension();
+    page = await ext.openPopup();
+
+    expect(page.$("local-import").hidden).toBe(true);
+    expect(page.$("local-import-again-group").hidden).toBe(true);
+    expect(page.opening.filter((m) => m.type.startsWith("local-import-"))).toEqual([]);
+    expect(page.text("settings-sync-note")).toContain("No WatchDesk account is connected");
+  });
+
+  it("shows no card to a browser that was already connected", async () => {
+    ext = await startExtension({ connected: true });
+    page = await ext.openPopup();
+
+    expect(page.$("local-import").hidden).toBe(true);
+    expect(page.$("local-import-again-group").hidden).toBe(true);
+  });
+});

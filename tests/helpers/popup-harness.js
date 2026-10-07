@@ -35,7 +35,13 @@ const moduleUrl = (file) => pathToFileURL(resolve(ROOT, file)).href;
 export const NOW = Date.parse("2026-10-05T09:00:00Z");
 
 // Sent by the worker; everything else comes from the popup.
-const FROM_WORKER = new Set(["parse-html", "play-sound", "watch-sync-changed", "account-state-changed"]);
+const FROM_WORKER = new Set([
+  "parse-html",
+  "play-sound",
+  "watch-sync-changed",
+  "account-state-changed",
+  "local-import-changed",
+]);
 
 export const OJ_URL = "https://www.onlinejobs.ph/jobseekers/jobsearch";
 export const GLASSDOOR_URL = "https://www.glassdoor.com/Job/remote-react-jobs-SRCH_IL.0,6_IS11047_KO7,12.htm";
@@ -186,6 +192,36 @@ export async function startExtension({ connected = false, synced = true, watches
     }
     ext.take();
   }
+
+  // WD-81: pairs the browser for real: "Connect Account", the approval on
+  // WatchDesk, the poll that collects the token, and WatchDesk naming the
+  // account. What a browser that was already in use does next is the import
+  // question.
+  ext.pair = async () => {
+    await ext.send({ type: "account-connect" });
+    api.queuePoll(api.approved);
+    await vi.advanceTimersByTimeAsync(3000);
+    await ext.settle();
+    ext.take();
+  };
+
+  // WD-81: a new service worker on the same storage, as after Chrome stops
+  // one. Whatever the old one was in the middle of is never finished by it
+  // if the request it was waiting on never answers.
+  ext.restartWorker = async () => {
+    const { listeners } = chrome.runtime.onMessage;
+    for (let i = listeners.length - 1; i >= 0; i -= 1) {
+      if (workerListeners.includes(listeners[i])) listeners.splice(i, 1);
+    }
+    for (const event of [chrome.alarms.onAlarm, chrome.tabs.onRemoved, chrome.runtime.onInstalled, chrome.runtime.onStartup]) {
+      event.listeners.length = 0;
+    }
+    const pageListeners = [...chrome.runtime.onMessage.listeners];
+    vi.resetModules();
+    await import(/* @vite-ignore */ moduleUrl("background.js"));
+    workerListeners = chrome.runtime.onMessage.listeners.filter((fn) => !pageListeners.includes(fn));
+    await ext.settle();
+  };
 
   // Opens the popup and waits for its first render (and, connected, for the
   // sync it asks for). The messages it sent while opening are in `opening`.

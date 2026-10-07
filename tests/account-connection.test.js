@@ -773,7 +773,13 @@ describe("whose the stored token is (WD-110)", () => {
     // The write of the token carries the emptied account with it, so no
     // worker stopped after it can find the two side by side.
     const write = env.chrome.storage.local.set.mock.calls.find(([items]) => mod.TOKEN_KEY in items)[0];
-    expect(write).toEqual({ [mod.TOKEN_KEY]: TEST_TOKEN, [mod.ACCOUNT_KEY]: null });
+    // WD-81: and the import record, so the new token is never there without
+    // the hold on syncing that goes with it.
+    expect(write).toEqual({
+      [mod.TOKEN_KEY]: TEST_TOKEN,
+      [mod.ACCOUNT_KEY]: null,
+      [mod.IMPORT_KEY]: { phase: "connecting" },
+    });
     expect(await mod.getAccountOwner()).toBeNull();
     expect(local()[mod.ACCOUNT_KEY]).toBeUndefined();
     await advance(60000);

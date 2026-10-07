@@ -126,11 +126,32 @@ export function installFakeWatchDesk({ now = () => Date.now(), saveUrl = (url) =
       if (inBatch.has(sourceKey)) continue;
       inBatch.add(sourceKey);
       if (listings.some((row) => row.sourceKey === sourceKey)) continue;
-      const row = { listingId: `listing-${listings.length + 1}`, sourceKey, watchId: watch.id, listing };
+      const row = { listingId: `listing-${listings.length + 1}`, sourceKey, watchId: watch.id, listing, status: "new" };
       listings.push(row);
       inserted.push({ id: row.listingId, jobId: listing.id });
     }
     return json(200, { watchId: watch.id, siteId: watch.siteId, received: inBatch.size, inserted });
+  };
+
+  // A listing's status (WD-67's route): PATCH /api/listings/[id] with
+  // { status }. An id the account does not have is the 404 of any other.
+  const LISTING_STATUSES = ["new", "viewed", "applied", "interviewing", "offer", "rejected", "archived"];
+  let listingRoute = () => undefined;
+  const answerListing = (request) => {
+    const scripted = listingRoute(request);
+    if (scripted) return scripted;
+    if (!request.headers.Authorization) return json(401, { error: "Sign in to continue." });
+    if (request.method !== "PATCH") return json(405, { error: "Method not allowed." });
+    if (!LISTING_STATUSES.includes(request.body?.status)) {
+      return json(400, {
+        error: "Check the highlighted fields.",
+        fieldErrors: { status: [`Status must be one of: ${LISTING_STATUSES.join(", ")}`] },
+      });
+    }
+    const row = listings.find((r) => r.listingId === request.path.slice("/api/listings/".length));
+    if (!row) return json(404, { error: "Listing not found." });
+    row.status = request.body.status;
+    return json(200, { id: row.listingId, sourceKey: row.sourceKey, status: row.status });
   };
 
   // The account's settings (WD-56's route, with WD-71's watcherState). PUT
@@ -219,6 +240,7 @@ export function installFakeWatchDesk({ now = () => Date.now(), saveUrl = (url) =
     if (request.path === "/api/devices/current") return currentAnswer(request);
     if (request.path === "/api/watches" || request.path.startsWith("/api/watches/")) return answerWatches(request);
     if (request.path === "/api/listings/ingest") return answerIngest(request);
+    if (request.path.startsWith("/api/listings/")) return answerListing(request);
     if (request.path === "/api/settings") return answerSettings(request);
     return json(404, { error: "Not found." });
   });
@@ -252,12 +274,19 @@ export function installFakeWatchDesk({ now = () => Date.now(), saveUrl = (url) =
       watchRoute = answer;
     },
     // The account's stored listings ({ listingId, sourceKey, watchId,
-    // listing }), and the calls made to the ingest route.
+    // listing, status }), and the calls made to the ingest route.
     listings,
     ingestCalls: () => requests.filter((r) => r.path === "/api/listings/ingest"),
     // Scripts the ingest route, like setWatchRoute.
     setIngestRoute: (answer) => {
       ingestRoute = answer;
+    },
+    // The calls made to a listing's own route (WD-81: the applied marks),
+    // and a way to script it, like setWatchRoute.
+    statusCalls: () =>
+      requests.filter((r) => r.path.startsWith("/api/listings/") && r.path !== "/api/listings/ingest"),
+    setListingRoute: (answer) => {
+      listingRoute = answer;
     },
     // The account's settings as WatchDesk holds them now, a way to play
     // "someone changed them on the web", and the calls made to the route.

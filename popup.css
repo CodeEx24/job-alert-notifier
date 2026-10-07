@@ -231,6 +231,77 @@ header .tagline {
   display: none;
 }
 
+/* Import of this browser's own data (WD-81) — see popup-local-import.js.
+   The account card's surface, with the accent on its left edge while it is
+   asking or working, and the warning colour while it is stopped. */
+.local-import {
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.local-import[hidden] {
+  display: none;
+}
+
+.local-import[data-tone="problem"] {
+  border-left-color: var(--warning);
+}
+
+.local-import[data-tone="ok"] {
+  border-left-color: var(--success-text);
+}
+
+.local-import-title {
+  margin: 0 0 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.local-import-text {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.local-import-details {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.local-import-details:empty {
+  display: none;
+}
+
+.local-import-details li + li {
+  margin-top: 3px;
+}
+
+.local-import-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.local-import-actions button {
+  padding: 5px 10px;
+  font-size: 11.5px;
+}
+
+.local-import-actions button[hidden] {
+  display: none;
+}
+
 .icon-btn {
   flex-shrink: 0;
   width: 26px;

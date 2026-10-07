@@ -170,7 +170,8 @@ Click the **⚙** icon in the header to open the Settings panel.
 The card at the top of the popup links the extension to a
 [WatchDesk](https://watchdesk-rosy.vercel.app) account. Once connected, your
 **watches** are the account's: the ones already in this browser are uploaded
-(one whose URL the account already has is not doubled), and a watch added,
+if you say so (see "Importing what this browser already has" below; one whose
+URL the account already has is not doubled), and a watch added,
 renamed, paused or removed on either side shows up on the other the next time
 the popup opens or a check runs. If WatchDesk can't be reached, the popup
 shows the last-synced list with an "Offline" line, checks keep running on
@@ -203,9 +204,9 @@ edit the same ones. A line at the top of Settings says where they are saved.
 If WatchDesk can't be reached, checks keep running on the settings last
 loaded and a change is refused with the reason, the control going back to
 what your account has; nothing is queued to be sent later. The settings you
-had chosen in this browser before connecting are not sent anywhere and are
-kept aside in this browser. If the browser is disconnected, the settings last
-loaded simply stay as this browser's own.
+had chosen in this browser before connecting are sent only if you import
+them, and are kept aside in this browser either way. If the browser is
+disconnected, the settings last loaded simply stay as this browser's own.
 
 The feed in the popup stays local. Without an account nothing changes: the
 watches and the settings stay in this browser and nothing is sent anywhere.
@@ -222,6 +223,34 @@ watches and the settings stay in this browser and nothing is sent anywhere.
 
 Revoking the device on WatchDesk's profile page disconnects the extension
 the next time the popup opens.
+
+### Importing what this browser already has
+
+A browser that was in use before it was connected has watches, a feed and
+settings of its own. The first time it is connected to an account, the popup
+asks before anything is synced: **Import your existing data**, with how many
+watches and listings there are.
+
+- **Import** uploads them: the watches (one whose URL the account already has
+  becomes that watch), then the feed's postings, then your "applied" marks,
+  then the settings you had changed here. It can take a minute; the card
+  shows how far it is, and it carries on by itself after a closed popup, a
+  restarted browser or an outage. At the end it says what was uploaded and
+  what, if anything, could not be. Nothing is removed from this browser.
+- **Not now** uploads nothing. The popup then shows your account's watches
+  and settings; this browser's own are kept aside, and **Settings → Import
+  this browser's data into your account…** asks again whenever you like.
+- Until you choose, nothing is sent to WatchDesk and the extension keeps
+  checking its own watches, exactly as with no account connected.
+
+An account is asked once per browser. A different account is asked afresh,
+and nothing is ever uploaded to an account that was not asked.
+
+What is not carried over: WatchDesk dates an imported listing from the
+import, not from when this browser found it (the posting's own date is
+kept); an "applied" mark is not added to a listing the account already had;
+"read" marks stay in this browser; and a feed entry whose watch you have
+since removed is not uploaded.
 
 **Developers:** the WatchDesk origin is set in `config.js`. To use a local
 WatchDesk on `http://localhost:3000`, set `WATCHDESK_ENV` to `"development"`

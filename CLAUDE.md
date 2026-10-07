@@ -116,8 +116,30 @@ Reference documents in the WatchDesk repository:
   file's through `saveAccountSettings()`). A value WatchDesk would refuse is
   refused first with the limits in `settings-limits.js`, a copy of the
   server's. The settings a browser had before its first sync are kept in
-  `chrome.storage.local` (`watchdeskSettingsBeforeConnect`) for WD-81 and
-  never uploaded here. `watcherState` is still never read back.
+  `chrome.storage.local` (`watchdeskSettingsBeforeConnect`) and uploaded only
+  by the import the user asked for (WD-81). `watcherState` is still never
+  read back.
+- **A freshly paired browser syncs nothing until the user has answered the
+  import question** (WD-81). `completePairing()` writes `watchdeskImport`
+  (`{ phase: "connecting" }`) in the same storage call as the token; while it
+  is `connecting` or `offered`, `isAccountActive()` is false and the watch
+  list, the settings, listing ingestion and the watcher report are all in
+  their unconnected mode. **Pick a module's mode with `isAccountActive()`,
+  never `isConnected()`.** "Import" runs `local-import.js`: watches, then the
+  feed straight to the ingest route (never through the WD-60 queue, whose cap
+  drops the oldest), then applied marks, then the settings the user stored
+  (through `importAccountSettings()`, the one read-modify-write), every
+  request bound to one `captureConnection()`, its progress in storage, every
+  write to the record through `changeImportRecord()`. "Not now" uploads
+  nothing: a watch that is only in this browser is set aside in
+  `watchdeskWatchesBeforeConnect`, never uploaded and never deleted. An
+  account is asked once per browser (`watchdeskImportAnswers`, by email); a
+  different account is asked afresh and is never sent what was read for
+  another; an import it interrupts is put by under its own account's name
+  (`watchdeskImportInterrupted`) and finished when that account is back.
+  Reset Extension clears all of the import's keys (`resetImport()`) except
+  an unanswered question; a disconnection clears none. The import never removes anything from this browser, and what it
+  cannot carry over is counted for the popup, never dropped silently.
 - **The WatchDesk origin is named in one place:** `config.js`, plus the same
   origins in `manifest.json`'s `host_permissions`. `tests/config.test.js`
   enforces this.
@@ -136,8 +158,9 @@ Reference documents in the WatchDesk repository:
 | `background.js` | Service worker: check cycle, feed, notifications, popup messages |
 | `config.js` | The WatchDesk origin (production / development) |
 | `watchdesk-api.js` | The only WatchDesk API client (`requestJson`, the authenticated `authorizedRequest` with retries (WD-44), one function per route, including the four watch routes (WD-54), listing ingestion (WD-59) and reading / replacing the account's settings (WD-71, WD-79)) |
-| `account-connection.js` | Device pairing, token storage, connected state (WD-42); `captureConnection()`, the handle that binds a request to one token (WD-110), and `isCurrentConnection()` (WD-71) |
-| `watch-sync.js` | The watch list of a connected browser: sync with the account, first-connection upload, add / rename / pause / remove through the API (WD-54), and adding an imported backup's watches (WD-111) |
+| `account-connection.js` | Device pairing, token storage, connected state (WD-42); `captureConnection()`, the handle that binds a request to one token (WD-110), and `isCurrentConnection()` (WD-71); `isAccountActive()`, the hold on a freshly paired browser, and `changeImportRecord()` (WD-81) |
+| `watch-sync.js` | The watch list of a connected browser: sync with the account, first-connection upload, add / rename / pause / remove through the API (WD-54), adding an imported backup's watches (WD-111), and the import's watch step and the watches set aside by "Not now" (WD-81) |
+| `local-import.js` | The import of a browser's own watches, feed and settings into an account it has just been connected to (WD-81): deciding whether to ask, the user's answer, and the resumable upload (watches, listings, applied marks, settings) |
 | `watcher-state.js` | Whether the periodic check is running or paused, kept in this browser, and reporting it to the connected account's settings (WD-71) |
 | `account-settings.js` | The settings of a connected browser (WD-79): the last-synced copy the check cycle reads, loading and saving them through the API, the settings kept from before connecting, and `changeAccountSettings()`, the one read-modify-write every PUT of the account's settings goes through |
 | `settings-limits.js` | What WatchDesk accepts for a setting, copied from its `lib/settings.ts` and `lib/validation/settings.ts` (WD-79) |
@@ -145,6 +168,7 @@ Reference documents in the WatchDesk repository:
 | `popup.html` / `popup.css` / `popup.js` | The popup |
 | `popup-watcher.js` | The popup's Start Watching / Pause Watching control (WD-71) |
 | `popup-account.js` | The popup's account card (WD-42): the one status area, titled with the connected account's email, "Connecting…" until WatchDesk has named it, or "Not connected" (WD-73) |
+| `popup-local-import.js` | The popup's "Import your existing data" card (WD-81): the question, the progress, how it ended, and the settings panel's way back to it after "Not now" |
 | `listing-ingest.js` | Posts each check cycle's listings to the connected account, after the cycle; records the last success for the popup (WD-59); queues what could not be sent and retries it on the next cycle (WD-60); queues a cycle before sending it, gives up on a batch WatchDesk will not take, and binds every request to the cycle's connection (WD-110) |
 | `popup-watch-sync.js` | The sync line inside the account card (WD-73): "Last synced Xm ago" (the later of the watch sync and the listing upload) and, as the live region, how many listings are waiting, offline, a refused account (403), dropped listings (WD-54, WD-59, WD-60), a watcher state WatchDesk has not been given yet (WD-71); and the refused-change message above the watch list (WD-54) |
 | `sites.js`, `content-*.js`, `offscreen.*`, `sounds.js` | Site adapters, tab readers, HTML parsing, alert tones |

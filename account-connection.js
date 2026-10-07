@@ -45,6 +45,15 @@
 //                               it stays when a token is stored or dropped,
 //                               and is removed here as soon as the connected
 //                               account turns out to be a different one.
+//                             watchdeskImport  where the import of this
+//                               browser's own data stands (WD-81;
+//                               local-import.js owns it). Written here in the
+//                               same call as a new token ("connecting"), so
+//                               there is no moment in which a freshly paired
+//                               browser may sync before it has been decided
+//                               whether to ask. While it is "connecting" or
+//                               "offered" nothing is synced with the account
+//                               (isAccountActive).
 //   Never chrome.storage.sync: nothing here may leave this browser.
 //
 // Keeping the polling alive in an MV3 worker: the worker is stopped after
@@ -82,6 +91,7 @@ export const LISTING_SYNC_KEY = "watchdeskListingSync";
 export const LISTING_QUEUE_KEY = "watchdeskListingQueue";
 export const WATCHER_SYNC_KEY = "watchdeskWatcherSync";
 export const SETTINGS_SYNC_KEY = "watchdeskSettingsSync";
+export const IMPORT_KEY = "watchdeskImport";
 export const PAIRING_KEY = "watchdeskPairing";
 export const OUTCOME_KEY = "watchdeskPairingOutcome";
 export const PAIRING_ALARM = "watchdesk-pairing";
@@ -115,6 +125,57 @@ async function readToken() {
 // between the account's watches and this browser's own. Never the token.
 export async function isConnected() {
   return (await readToken()) !== null;
+}
+
+// ---------- the import of this browser's own data (WD-81) ----------
+
+// The phases in which the user has not yet said whether this browser's own
+// watches, feed and settings go to the account that was just connected.
+const IMPORT_UNANSWERED = ["connecting", "offered"];
+// The phases in which the answer was no: "declined", and the question asked
+// again from the settings panel, until it is answered differently.
+const IMPORT_DECLINED = ["declined", "offered-again"];
+
+async function readImportPhase() {
+  const { [IMPORT_KEY]: record } = await chrome.storage.local.get(IMPORT_KEY);
+  return typeof record?.phase === "string" ? record.phase : null;
+}
+
+// Whether this browser works with the connected account: a token is stored
+// and the import question, if there is one, has been answered. Until then
+// the extension behaves exactly as with no account connected: its watches,
+// settings and feed are its own and nothing is sent or fetched. This, not
+// isConnected(), is what watch-sync.js, account-settings.js,
+// listing-ingest.js and watcher-state.js pick their mode by.
+export async function isAccountActive() {
+  const { [TOKEN_KEY]: token, [IMPORT_KEY]: record } = await chrome.storage.local.get([TOKEN_KEY, IMPORT_KEY]);
+  return typeof token === "string" && Boolean(token) && !IMPORT_UNANSWERED.includes(record?.phase);
+}
+
+// The user declined the import for this connection: a watch that is only in
+// this browser is set aside by watch-sync.js, never uploaded.
+export async function keepsOwnWatchesLocal() {
+  return IMPORT_DECLINED.includes(await readImportPhase());
+}
+
+// THE way local-import.js changes the import record: in the queue a new
+// token is stored in (completePairing), so a step of an import that was
+// under way can never write its progress over the "connecting" of a pairing
+// that completed meanwhile. `change(record)` is given the stored record (or
+// null) and returns the one to store, null to remove it, or undefined to
+// leave it; it may read storage but must not wait on anything that itself
+// waits for this queue (a request, a sync). Resolves to the record as it
+// then stands.
+export function changeImportRecord(change) {
+  return withLock(async () => {
+    const { [IMPORT_KEY]: stored } = await chrome.storage.local.get(IMPORT_KEY);
+    const record = stored && typeof stored === "object" ? stored : null;
+    const next = await change(record);
+    if (next === undefined) return record;
+    if (next === null) await chrome.storage.local.remove(IMPORT_KEY);
+    else await chrome.storage.local.set({ [IMPORT_KEY]: next });
+    return next;
+  });
 }
 
 // How one account is told from another (WD-60): its email address, trimmed
@@ -243,9 +304,20 @@ function endPairing(code, outcome) {
 // The previous token's account is emptied in the same write as the token
 // (WD-110), so there is no moment, and no stopped worker, in which the new
 // token sits beside the old account's name.
+// So is the import record (WD-81): "connecting" from the first moment the
+// token exists, which holds every sync until local-import.js has decided
+// whether there is anything to ask. An import that was under way is carried
+// along as `interrupted`; it is taken up again only if this turns out to be
+// the same account.
 async function completePairing(token) {
   await withLock(async () => {
-    await chrome.storage.local.set({ [TOKEN_KEY]: token, [ACCOUNT_KEY]: null });
+    const { [IMPORT_KEY]: earlier } = await chrome.storage.local.get(IMPORT_KEY);
+    const interrupted = earlier?.phase === "importing" ? earlier : earlier?.interrupted;
+    await chrome.storage.local.set({
+      [TOKEN_KEY]: token,
+      [ACCOUNT_KEY]: null,
+      [IMPORT_KEY]: { phase: "connecting", ...(interrupted ? { interrupted } : {}) },
+    });
     await chrome.storage.local.remove([ACCOUNT_KEY, WATCH_SYNC_KEY, LISTING_SYNC_KEY, WATCHER_SYNC_KEY, SETTINGS_SYNC_KEY]);
     await chrome.storage.session.remove([PAIRING_KEY, OUTCOME_KEY]);
     await chrome.alarms.clear(PAIRING_ALARM);

@@ -124,9 +124,24 @@ describe("popup.html keeps every control of the shipped popup", () => {
 // document order. The shipped copy has none of them, so this is skipped
 // against it.
 const ADDED_SINCE_SHIPPED = [
+  // WD-81: "Import your existing data": the question a freshly connected
+  // browser asks about its own watches, feed and settings, its progress and
+  // how it ended.
+  ["local-import", "section"],
+  ["local-import-title", "h2"],
+  ["local-import-text", "p"],
+  ["local-import-details", "ul"],
+  ["local-import-accept", "button"],
+  ["local-import-decline", "button"],
+  ["local-import-retry", "button"],
+  ["local-import-dismiss", "button"],
   // WD-79: the line at the top of the settings panel that says where the
   // settings are saved (this browser only, or the connected account).
   ["settings-sync-note", "p"],
+  // WD-81: the way back to the import question after "Not now".
+  ["local-import-again-group", "div"],
+  ["local-import-again", "button"],
+  ["local-import-again-hint", "p"],
   // WD-111: the hint under Reset Extension. The shipped popup has the same
   // paragraph with the same words and no id; the id lets popup.js say what
   // Reset does with an account connected.
@@ -146,6 +161,35 @@ describe.skipIf(REFERENCE_ROOT)("popup.html's controls added since the shipped p
     expect(el, `#${id} is gone`).not.toBeNull();
     expect(kind(el)).toBe(expected);
     expect(doc.querySelectorAll(`[id="${id}"]`)).toHaveLength(1);
+  });
+
+  it("the import card (WD-81) follows the account card, hidden and empty until popup.js fills it in, and its way back is in the settings panel", () => {
+    const card = doc.getElementById("local-import");
+    expect(card.closest("#settings-panel")).toBeNull();
+    expect(doc.getElementById("account-card").compareDocumentPosition(card) & 4).toBe(4);
+    expect(card.compareDocumentPosition(doc.getElementById("settings-panel")) & 4).toBe(4);
+    expect(card.hidden).toBe(true);
+    expect(card.getAttribute("aria-labelledby")).toBe("local-import-title");
+    expect(doc.getElementById("local-import-text").getAttribute("aria-live")).toBe("polite");
+    expect(doc.getElementById("local-import-title").textContent).toBe("");
+    expect(doc.getElementById("local-import-text").textContent).toBe("");
+    // Real buttons, in the order they are read: reachable and pressable from
+    // the keyboard with nothing added.
+    const buttons = [...card.querySelectorAll("button")];
+    expect(buttons.map((b) => [b.id, b.type, b.hidden, b.getAttribute("tabindex")])).toEqual([
+      ["local-import-accept", "button", true, null],
+      ["local-import-decline", "button", true, null],
+      ["local-import-retry", "button", true, null],
+      ["local-import-dismiss", "button", true, null],
+    ]);
+    // Still one role="status" in the popup: the sync line (WD-73).
+    expect([...doc.querySelectorAll('[role="status"]')].map((el) => el.id)).toEqual(["watch-sync-text"]);
+
+    const again = doc.getElementById("local-import-again-group");
+    expect(doc.getElementById("settings-panel").contains(again)).toBe(true);
+    expect(again.hidden).toBe(true);
+    expect(doc.getElementById("import-settings-btn").compareDocumentPosition(again) & 4).toBe(4);
+    expect(again.compareDocumentPosition(doc.getElementById("reset-extension")) & 4).toBe(4);
   });
 
   it("Start / Pause Watching (WD-71) is on the main page, between the settings panel and the check controls", () => {
