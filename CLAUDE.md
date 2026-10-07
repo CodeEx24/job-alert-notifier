@@ -135,7 +135,10 @@ Reference documents in the WatchDesk repository:
   `watchdeskWatchesBeforeConnect`, never uploaded and never deleted. An
   account is asked once per browser (`watchdeskImportAnswers`, by email); a
   different account is asked afresh and is never sent what was read for
-  another. The import never removes anything from this browser, and what it
+  another; an import it interrupts is put by under its own account's name
+  (`watchdeskImportInterrupted`) and finished when that account is back.
+  Reset Extension clears all of the import's keys (`resetImport()`) except
+  an unanswered question; a disconnection clears none. The import never removes anything from this browser, and what it
   cannot carry over is counted for the popup, never dropped silently.
 - **The WatchDesk origin is named in one place:** `config.js`, plus the same
   origins in `manifest.json`'s `host_permissions`. `tests/config.test.js`

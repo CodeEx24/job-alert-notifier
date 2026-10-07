@@ -77,6 +77,12 @@
 //     the queue a new token is stored in, and only while the record is still
 //     this import's: a pairing that completes ends it.
 //   watchdeskImportAnswers  { <account email>: "accepted" | "declined" }
+//   watchdeskImportInterrupted  { <account email>: <its importing record> }
+//     An import that was under way when a different account connected. That
+//     account is asked its own question and gets nothing of it; the import
+//     goes on when its own account is connected again.
+//   Reset Extension removes all of these and the watches set aside
+//   (resetImport); a disconnection removes none of them.
 //   Nothing that must survive a worker restart is in a module variable.
 //
 // Nothing here sees the device token (every request is bound to the
@@ -96,6 +102,7 @@ import {
   getSetAsideWatches,
   keepOwnWatches,
   uploadOwnWatches,
+  WATCHES_SNAPSHOT_KEY,
 } from "./watch-sync.js";
 import { importAccountSettings, SETTINGS_SNAPSHOT_KEY, SYNCED_SETTINGS } from "./account-settings.js";
 import { toListing } from "./listing-ingest.js";
@@ -103,6 +110,7 @@ import { ingestListings, setListingStatus, INGEST_MAX_LISTINGS } from "./watchde
 import { settingsProblem } from "./settings-limits.js";
 
 export const IMPORT_ANSWERS_KEY = "watchdeskImportAnswers";
+export const IMPORT_INTERRUPTED_KEY = "watchdeskImportInterrupted";
 export const IMPORT_ALARM = "watchdesk-import";
 // chrome.alarms' minimum period. It wakes a worker that was stopped
 // mid-import, and retries a stopped import when its wait is over.
@@ -131,6 +139,25 @@ async function readAnswers() {
 
 async function rememberAnswer(owner, answer) {
   await chrome.storage.local.set({ [IMPORT_ANSWERS_KEY]: { ...(await readAnswers()), [owner]: answer } });
+}
+
+// Imports that were under way when a different account connected, by the
+// account they belong to.
+async function readInterrupted() {
+  const { [IMPORT_INTERRUPTED_KEY]: kept } = await chrome.storage.local.get(IMPORT_INTERRUPTED_KEY);
+  return kept && typeof kept === "object" ? kept : {};
+}
+
+async function keepInterrupted(record) {
+  await chrome.storage.local.set({ [IMPORT_INTERRUPTED_KEY]: { ...(await readInterrupted()), [record.owner]: record } });
+}
+
+async function forgetInterrupted(owner) {
+  const kept = await readInterrupted();
+  if (!(owner in kept)) return;
+  delete kept[owner];
+  if (Object.keys(kept).length === 0) await chrome.storage.local.remove(IMPORT_INTERRUPTED_KEY);
+  else await chrome.storage.local.set({ [IMPORT_INTERRUPTED_KEY]: kept });
 }
 
 const emptyCounts = () => ({
@@ -289,14 +316,19 @@ function inTurn(run) {
 // What becomes of a "connecting" record, given what this browser holds,
 // whose the connection is, and what that account answered before.
 // Undefined: not yet (WatchDesk has not said whose the token is).
-function settle(record, data, owner, answers) {
-  // The same account again: an import a disconnection stopped goes on. From
-  // the watches, which changes nothing that was done: a new connection knows
-  // no watch by its WatchDesk id until a sync has told it (watch-sync.js),
-  // and the listings that are left need those ids.
-  if (owner && record.interrupted?.owner === owner) {
-    return { ...record.interrupted, step: "watches", problem: null, attempts: 0, resumeAt: null };
-  }
+// `kept` is the import this account had under way when another account
+// connected, if any.
+function settle(record, data, owner, answers, kept) {
+  // The same account again: an import a disconnection stopped goes on,
+  // whether it reconnects at once or after another account has been here.
+  // From the watches, which changes nothing that was done: a new connection
+  // knows no watch by its WatchDesk id until a sync has told it
+  // (watch-sync.js), and the listings that are left need those ids.
+  const interrupted = owner && record.interrupted?.owner === owner ? record.interrupted : owner ? kept : null;
+  if (interrupted) return { ...interrupted, step: "watches", problem: null, attempts: 0, resumeAt: null };
+  // An import is waiting to hear whose account this is; it is not dropped
+  // for want of a name.
+  if (record.interrupted && !owner) return undefined;
   if (!data.exists) return null;
   if (!owner) return undefined;
   if (answers[owner] === "accepted") return null;
@@ -314,12 +346,19 @@ async function decide() {
   if (record.phase === "connecting") {
     const data = await ownData();
     const answers = await readAnswers();
-    await changeImportRecord(async (stored) => {
+    const { owner } = connection;
+    // Another account's import was under way: it is put by, under that
+    // account's name, before this account is settled, and taken up again
+    // when that account is back. This account gets nothing of it.
+    if (owner && record.interrupted?.owner && record.interrupted.owner !== owner) await keepInterrupted(record.interrupted);
+    const kept = owner ? (await readInterrupted())[owner] : undefined;
+    const next = await changeImportRecord(async (stored) => {
       if (stored?.phase !== "connecting" || !(await isCurrentConnection(connection))) return undefined;
-      const next = settle(stored, data, connection.owner, answers);
-      settled = next !== undefined;
-      return next;
+      const outcome = settle(stored, data, owner, answers, kept);
+      settled = outcome !== undefined;
+      return outcome;
     });
+    if (settled && next?.phase === "importing") await forgetInterrupted(owner);
   } else if (record.phase === "offered" && !(await ownData()).exists) {
     // Reset, or cleared by hand, while the question was open: nothing is
     // left to ask about.
@@ -421,6 +460,24 @@ export async function offerImportAgain() {
     );
   }
   return getImportStatus();
+}
+
+// Reset Extension: everything this module keeps goes, like the watches and
+// the feed it was about: the record (an import under way ends there), what
+// each account answered, the imports put by for other accounts, and the
+// watches set aside by a "no". A connected browser is then an ordinary
+// connected one, with nothing of its own left to ask about.
+// One thing stays: a question that is still open. Removing it would let the
+// browser start syncing with an account whose user never answered; it is
+// asked about what the reset left (the default watch and settings) instead.
+export async function resetImport() {
+  await changeImportRecord((stored) => {
+    if (stored?.phase === "offered") return { phase: "offered", owner: stored.owner };
+    if (stored?.phase === "connecting") return { phase: "connecting" };
+    return null;
+  });
+  await chrome.storage.local.remove([IMPORT_ANSWERS_KEY, IMPORT_INTERRUPTED_KEY, WATCHES_SNAPSHOT_KEY]);
+  await chrome.alarms.clear(IMPORT_ALARM);
 }
 
 // The user has read how the import ended.
@@ -727,6 +784,7 @@ async function runSteps(force) {
       return { phase: "done", owner, again: Boolean(stored.again), finishedAt: Date.now(), counts };
     });
     if (!finished) return;
+    await forgetInterrupted(owner);
     await chrome.alarms.clear(IMPORT_ALARM);
     await announce();
   } catch (err) {

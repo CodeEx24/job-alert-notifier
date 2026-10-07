@@ -116,6 +116,11 @@ function describeResult(counts) {
 
 const sentence = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 
+// Said before the user chooses, not only afterwards: WatchDesk stamps a
+// listing with the day it receives it.
+const DATED_TODAY =
+  "Imported listings will be dated the day of the import on WatchDesk, not the day this browser found them. The date each job was posted is kept.";
+
 // What the card shows for a status: null when it is hidden, else { tone,
 // title, text, details, buttons }. Pure, so the tests can check every state.
 export function describeImport(status) {
@@ -129,6 +134,7 @@ export function describeImport(status) {
         text: `This browser kept ${what} from before it was connected. Import them into your WatchDesk account? It can take a minute.`,
         details: [
           "Import uploads them to your account. A watch whose address the account already has is not added twice, and your settings from then replace the account's.",
+          ...(status.listings > 0 ? [DATED_TODAY] : []),
           "Not now leaves everything as it is.",
         ],
         buttons: ["accept", "decline"],
@@ -140,6 +146,7 @@ export function describeImport(status) {
       text: `This browser has ${what} of its own. Import them into your WatchDesk account? It can take a minute.`,
       details: [
         "Import uploads them to your account. They stay in this browser too.",
+        ...(status.listings > 0 ? [DATED_TODAY] : []),
         "Not now keeps everything in this browser and starts the account without it. The watch list here then shows your account's watches; this browser's own are kept, and you can import them later from Settings.",
         "Until you choose, nothing is sent to WatchDesk and this browser keeps checking its own watches.",
       ],

@@ -1783,9 +1783,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     // WD-54, WD-79: a connected account's watches and settings are not this
     // browser's to clear.
     const account = lastState?.watchSync?.mode === "account";
+    // WD-81: the watches set aside by "Not now" are this browser's own, and
+    // a reset clears them like the rest of what is only here.
+    const setAside = lastState?.localImport?.phase === "declined" && lastState.localImport.watches > 0;
     const confirmed = confirm(
       account
-        ? "Reset Job Alert Notifier? This clears the whole feed in this browser. Your watches and settings are kept: they belong to your WatchDesk account. This can't be undone."
+        ? `Reset Job Alert Notifier? This clears the whole feed in this browser${
+            setAside ? ", and the watches it kept from before it was connected" : ""
+          }. Your watches and settings are kept: they belong to your WatchDesk account. This can't be undone.`
         : "Reset Job Alert Notifier? This clears every watch, the whole feed, and all settings back to defaults. This can't be undone — export a backup first if you want to keep any of it."
     );
     if (!confirmed) return;

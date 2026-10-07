@@ -11,7 +11,13 @@ import { TEST_TOKEN } from "./helpers/fake-watchdesk.js";
 import { IMPORT_KEY, TOKEN_KEY, WATCH_SYNC_KEY } from "../account-connection.js";
 import { WATCHES_SNAPSHOT_KEY } from "../watch-sync.js";
 import { SETTINGS_SNAPSHOT_KEY } from "../account-settings.js";
-import { IMPORT_ALARM, IMPORT_ANSWERS_KEY, IMPORT_REQUEST_GAP_MS, IMPORT_RETRY_BASE_MS } from "../local-import.js";
+import {
+  IMPORT_ALARM,
+  IMPORT_ANSWERS_KEY,
+  IMPORT_INTERRUPTED_KEY,
+  IMPORT_REQUEST_GAP_MS,
+  IMPORT_RETRY_BASE_MS,
+} from "../local-import.js";
 
 const [OJ, GD, LI, LI_VUE, UP] = WATCHES;
 const ADA = "ada@example.com";
@@ -194,17 +200,11 @@ describe("a first pairing of a browser that has data of its own", () => {
     expect(dataCalls()).toEqual([]);
   });
 
-  it("drops the question when the user removes everything it was about, and keeps it through a reset", async () => {
+  it("drops the question when the user removes everything it was about", async () => {
     await paired({ watches: [OJ], feed: [entry(OJ, 1)] });
     expect((await status()).phase).toBe("offered");
 
-    // Reset, with the question open, is the reset of an unconnected browser:
-    // it stores the default watch and the default settings, which are data.
-    await ext.send({ type: "reset-extension" });
-    expect(await status()).toEqual({ phase: "offered", again: false, watches: 1, listings: 0, settings: true });
-    expect(dataCalls()).toEqual([]);
-
-    await ext.chrome.storage.sync.remove(["intervalMinutes", "soundId", "notificationsMuted", "titleFilter"]);
+    await ext.send({ type: "clear-feed" });
     await ext.send({ type: "remove-watch", id: "default" });
     expect(await status()).toBeNull();
     expect(record()).toBeUndefined();
@@ -815,6 +815,79 @@ describe("which pairing is the first", () => {
   });
 });
 
+describe("what the import keeps in storage, on a reset and on a disconnection", () => {
+  const KEPT = [IMPORT_KEY, IMPORT_ANSWERS_KEY, IMPORT_INTERRUPTED_KEY, WATCHES_SNAPSHOT_KEY];
+  const kept = () => Object.fromEntries(KEPT.filter((key) => key in ext.local()).map((key) => [key, ext.local()[key]]));
+
+  it("Reset Extension clears the answer, the watches set aside and the record", async () => {
+    await paired({ feed: [entry(OJ, 1)] });
+    await ext.send({ type: "local-import-decline" });
+    await ext.send({ type: "sync-watches" });
+    expect(Object.keys(kept()).sort()).toEqual([IMPORT_KEY, IMPORT_ANSWERS_KEY, WATCHES_SNAPSHOT_KEY].sort());
+
+    await ext.send({ type: "reset-extension" });
+
+    expect(kept()).toEqual({});
+    expect(await status()).toBeNull();
+    // An ordinary connected browser: the account's watches are untouched,
+    // and nothing of the old list comes back or goes up.
+    await ext.send({ type: "sync-watches" });
+    await drive();
+    expect(posted()).toEqual([]);
+    expect(ext.watches()).toEqual([]);
+  });
+
+  it("Reset Extension ends an import that is under way, and clears one put by for another account", async () => {
+    await paired({ feed: entries(OJ, 1000, 3) });
+    ext.api.setIngestRoute(ext.api.networkError);
+    await ext.send({ type: "local-import-accept" });
+    await drive(30000);
+    expect(record()).toMatchObject({ phase: "importing", step: "listings" });
+    await ext.chrome.storage.local.set({ [IMPORT_INTERRUPTED_KEY]: { [BOB]: { phase: "importing", owner: BOB } } });
+    ext.api.setIngestRoute(() => undefined);
+
+    await ext.send({ type: "reset-extension" });
+    await tick(IMPORT_ALARM);
+
+    expect(kept()).toEqual({});
+    expect(await ext.chrome.alarms.get(IMPORT_ALARM)).toBeUndefined();
+    expect(ext.api.listings).toEqual([]);
+  });
+
+  it("Reset Extension leaves an unanswered question open, so nothing starts syncing without an answer", async () => {
+    await paired({ watches: [OJ], feed: [entry(OJ, 1)] });
+    await ext.chrome.storage.local.set({ [IMPORT_ANSWERS_KEY]: { [BOB]: "accepted" } });
+
+    await ext.send({ type: "reset-extension" });
+    await ext.send({ type: "sync-watches" });
+    await tick("check-jobs");
+
+    // Asked about what the reset left: the default watch and settings.
+    expect(kept()).toEqual({ [IMPORT_KEY]: { phase: "offered", owner: ADA } });
+    expect(await status()).toEqual({ phase: "offered", again: false, watches: 1, listings: 0, settings: true });
+    expect(dataCalls()).toEqual([]);
+  });
+
+  it.each([
+    ["the question is open", async () => {}],
+    ["the user said no", async () => { await ext.send({ type: "local-import-decline" }); await ext.send({ type: "sync-watches" }); }],
+    ["the import is done", async () => { await accept(); }],
+  ])("a disconnection removes none of it (%s)", async (_name, answer) => {
+    await paired({ feed: [entry(OJ, 1)] });
+    await answer();
+    const before = kept();
+    expect(Object.keys(before)).toContain(IMPORT_KEY);
+    const feed = ext.local().feed;
+
+    await loseConnection();
+
+    expect(kept()).toEqual(before);
+    expect(ext.local().feed).toEqual(feed);
+    // With no account connected there is nothing to show for it.
+    expect(await status()).toBeNull();
+  });
+});
+
 describe("an import belongs to one account", () => {
   it("stops when the browser is disconnected, and the same account connecting again carries it on", async () => {
     await paired({ feed: [...entries(OJ, 1000, 250), ...entries(GD, 2000, 5)] });
@@ -872,6 +945,54 @@ describe("an import belongs to one account", () => {
     await tick("check-jobs");
     await drive();
     expect(dataCalls()).toHaveLength(before);
+  });
+
+  it("is put by while another account is connected, and finished when its own account is back", async () => {
+    await paired({ feed: [...entries(OJ, 1000, 250), ...entries(GD, 2000, 5)], sync: { soundId: "soft" } });
+    let revoked = false;
+    ext.api.setIngestRoute((request) => {
+      if (request.body.listings.length === 50) revoked = true;
+      return revoked ? ext.api.json(401, { error: "Sign in to continue." }) : undefined;
+    });
+    await ext.send({ type: "local-import-accept" });
+    await drive();
+    expect(record()).toMatchObject({ phase: "importing", owner: ADA, step: "listings" });
+    expect(ext.api.listings).toHaveLength(200);
+    revoked = false;
+    ext.api.setIngestRoute(() => undefined);
+
+    // Bob connects, is asked his own question, says no, and uses the browser.
+    await pairAs(BOB);
+    expect(await status()).toMatchObject({ phase: "offered", again: false });
+    expect(ext.local()[IMPORT_INTERRUPTED_KEY]).toEqual({ [ADA]: expect.objectContaining({ phase: "importing", owner: ADA }) });
+    const adasWatches = ext.api.watches.splice(0);
+    const adasListings = ext.api.listings.splice(0);
+    await ext.send({ type: "local-import-decline" });
+    await ext.send({ type: "sync-watches" });
+    await tick("check-jobs");
+    // Nothing of Ada's import went to Bob's (empty) account.
+    expect(ext.api.watches).toEqual([]);
+    expect(ext.api.listings).toEqual([]);
+    expect(posted()).toHaveLength(5);
+
+    // Ada is back: not asked again, and the rest of her import goes up.
+    await loseConnection();
+    ext.api.watches.push(...adasWatches);
+    ext.api.listings.push(...adasListings);
+    await pairAs(ADA);
+    expect(await status()).toMatchObject({ phase: "importing" });
+    expect(ext.local()[IMPORT_INTERRUPTED_KEY]).toBeUndefined();
+    await ext.send({ type: "local-import-retry" });
+    await drive();
+
+    expect(record()).toMatchObject({ phase: "done", owner: ADA });
+    expect(ext.api.listings).toHaveLength(255);
+    expect(new Set(sourceKeys()).size).toBe(255);
+    // What was sent before the switch was not sent again.
+    expect(ext.api.ingestCalls().filter((call) => call.body.listings.length === 200)).toHaveLength(1);
+    expect(record().counts).toMatchObject({ listingsUploaded: 255 });
+    expect(ext.api.settings().soundId).toBe("soft");
+    expect(answers()).toEqual({ [ADA]: "accepted", [BOB]: "declined" });
   });
 
   it("sends nothing more once the token is another one, even with a request in flight", async () => {

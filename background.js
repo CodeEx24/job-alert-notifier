@@ -79,6 +79,7 @@ import {
   declineImport,
   offerImportAgain,
   dismissImport,
+  resetImport,
   runImport,
 } from "./local-import.js";
 
@@ -888,6 +889,11 @@ async function resetExtension() {
   if (Object.keys(defaults).length > 0) await saveSettings(defaults);
   await saveRunState({ seenIds: {}, lastChecked: {}, lastResult: {}, badgeCount: 0, feed: [], consecutiveErrors: {}, lastRunAt: null, lastGap: null });
   await updateBadge(0);
+  // WD-81: and whatever the import of this browser's own data kept: the
+  // open question or the import under way, what each account answered, and
+  // the watches set aside by a "Not now". They are the watches and the feed
+  // this reset clears.
+  await resetImport();
   // WD-71: running is the default, like everything else a reset puts back.
   await saveWatcherState("running");
   await scheduleAlarm();

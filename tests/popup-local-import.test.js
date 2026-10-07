@@ -87,9 +87,18 @@ describe("what the card says (describeImport)", () => {
     );
     expect(view.details).toEqual([
       "Import uploads them to your account. They stay in this browser too.",
+      // Said before the choice, in plain words.
+      "Imported listings will be dated the day of the import on WatchDesk, not the day this browser found them. The date each job was posted is kept.",
       "Not now keeps everything in this browser and starts the account without it. The watch list here then shows your account's watches; this browser's own are kept, and you can import them later from Settings.",
       "Until you choose, nothing is sent to WatchDesk and this browser keeps checking its own watches.",
     ]);
+  });
+
+  it("says nothing about dates when there is no listing to import, and says it in the second question too", () => {
+    const dated = (status) => describeImport({ phase: "offered", ...status }).details.filter((line) => line.includes("dated the day of the import"));
+    expect(dated({ again: false, watches: 2, listings: 0, settings: true })).toEqual([]);
+    expect(dated({ again: true, watches: 2, listings: 3, settings: false })).toHaveLength(1);
+    expect(dated({ again: true, watches: 2, listings: 0, settings: false })).toEqual([]);
   });
 
   it("names only what there is, in the singular where there is one", () => {
@@ -195,7 +204,8 @@ describe("in the popup, after a first pairing", () => {
     expect(page.text("local-import-text")).toBe(
       "This browser has 5 watches, 2 listings and your settings of its own. Import them into your WatchDesk account? It can take a minute.",
     );
-    expect(details()).toHaveLength(3);
+    expect(details()).toHaveLength(4);
+    expect(details()[1]).toContain("Imported listings will be dated the day of the import on WatchDesk");
     expect(shownButtons()).toEqual(["Import", "Not now"]);
     // Connected, by name, and not syncing: no sync line, the browser's own
     // watches in the list, and the settings panel says why.
@@ -294,6 +304,24 @@ describe("in the popup, after a first pairing", () => {
     expect(page.text("local-import-again-hint")).toBe(
       "This browser kept 5 watches, 2 listings and your settings from before it was connected. Nothing of it was uploaded.",
     );
+  });
+
+  it("Reset, after Not now, says it clears the watches that were kept, and does", async () => {
+    await pairedPopup();
+    await page.click(page.$("local-import-decline"));
+    await drive(1000);
+    page = await ext.openPopup();
+    await page.click(page.$("settings-toggle"));
+
+    await page.click(page.$("reset-extension"));
+
+    expect(page.confirm).toHaveBeenCalledWith(
+      "Reset Job Alert Notifier? This clears the whole feed in this browser, and the watches it kept from before it was connected. Your watches and settings are kept: they belong to your WatchDesk account. This can't be undone.",
+    );
+    expect(ext.local().watchdeskWatchesBeforeConnect).toBeUndefined();
+    expect(ext.local().watchdeskImport).toBeUndefined();
+    expect(page.$("local-import-again-group").hidden).toBe(true);
+    expect(ext.api.watchCalls("POST")).toEqual([]);
   });
 
   it("the way back: Settings asks again, about what was kept, and Import then uploads it", async () => {
