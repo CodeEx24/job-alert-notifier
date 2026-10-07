@@ -97,14 +97,22 @@ function withLock(fn) {
 // are — or a failure as watchdesk-api.js names it. A failed PUT also carries
 // `current`, the settings the GET had just returned. Nothing is sent when
 // the account already holds every value in `patch`.
-async function readModifyWrite(patch, connection) {
+// WD-80: `patch` may be a function of the settings just read that returns
+// the fields to change, for a change that is smaller than a field (one
+// keyword of the filter). `problemWith(fields)` is asked about what it
+// returned; its words end the write before the PUT:
+// { kind: "refused", message, current }.
+async function readModifyWrite(patch, connection, problemWith = () => null) {
   const read = await readSettings(connection);
   if (read.kind !== "ok") return read;
-  if (Object.keys(patch).every((field) => same(read.settings[field], patch[field]))) return read;
+  const fields = typeof patch === "function" ? patch(read.settings) : patch;
+  const problem = problemWith(fields);
+  if (problem) return { kind: "refused", message: problem, current: read.settings };
+  if (Object.keys(fields).every((field) => same(read.settings[field], fields[field]))) return read;
 
   // The settings as they were just read, with only these fields changed,
   // including any field this version does not know.
-  const replaced = await replaceSettings({ ...read.settings, ...patch }, connection);
+  const replaced = await replaceSettings({ ...read.settings, ...fields }, connection);
   return replaced.kind === "ok" ? replaced : { ...replaced, current: read.settings };
 }
 
@@ -193,7 +201,7 @@ async function storeCopy(settings, connection) {
 // answering: it refused that change, and is not out of reach.
 async function noteAnswer(result, connection) {
   if (result.kind === "unauthorized" || result.kind === "connection-changed") return;
-  const answered = result.kind === "ok" || result.kind === "invalid";
+  const answered = result.kind === "ok" || result.kind === "invalid" || result.kind === "refused";
   await setProblem(answered ? null : result.kind === "unreachable" ? "offline" : "unavailable", connection);
 }
 
@@ -273,25 +281,72 @@ const failed = (result) => ({ ok: false, error: failureMessage(result) });
 // answered the GET but refused the PUT, the copy is still brought to what the
 // account holds, which is what the popup's controls go back to.
 export function saveAccountSettings(patch) {
-  return withLock(async () => {
-    const result = await save(patch);
-    if (result.kind === "ok") return { ok: true };
-    return result.kind === "refused" ? { ok: false, error: result.message } : failed(result);
+  return withLock(async () => answered(await save(patch)));
+}
+
+function answered(result) {
+  if (result.kind === "ok") return { ok: true };
+  return result.kind === "refused" ? { ok: false, error: result.message } : failed(result);
+}
+
+const keywordKey = (keyword) => String(keyword).trim().toLowerCase();
+
+// WD-80: what a change to the keyword filter made in the popup does to the
+// filter the account holds now. The popup sends the whole filter it wants
+// (`wanted`); set against the one it was showing (`shown`), that is the
+// switch turned on or off, keywords added and keywords removed. Only those
+// are applied to `current`, so a keyword added on the web since the popup
+// last loaded is kept, and one removed there is not put back. WatchDesk
+// treats two spellings that differ only in letter case as one keyword, and so
+// does this. A `current` that is not a filter is replaced by `wanted`.
+export function mergeTitleFilter(current, shown, wanted) {
+  if (!current || typeof current.enabled !== "boolean" || !Array.isArray(current.keywords)) return wanted;
+  const shownKeys = new Set((Array.isArray(shown?.keywords) ? shown.keywords : []).map(keywordKey));
+  const wantedKeys = new Set(wanted.keywords.map(keywordKey));
+  const kept = current.keywords.filter((keyword) => {
+    const key = keywordKey(keyword);
+    return !shownKeys.has(key) || wantedKeys.has(key);
   });
+  const keptKeys = new Set(kept.map(keywordKey));
+  const added = wanted.keywords.filter((keyword) => {
+    const key = keywordKey(keyword);
+    return !shownKeys.has(key) && !keptKeys.has(key);
+  });
+  return {
+    enabled: wanted.enabled === shown?.enabled ? current.enabled : wanted.enabled,
+    keywords: [...kept, ...added],
+  };
+}
+
+// Saves a change to the keyword filter made in the popup (WD-80): `wanted`
+// is the filter the popup sent, `shown` the one it was showing (the copy).
+// As saveAccountSettings(), but what is written is the account's filter as
+// it is at this moment with only the user's change made to it
+// (mergeTitleFilter), not the popup's whole list over it.
+export function saveAccountTitleFilter(wanted, shown) {
+  return withLock(async () =>
+    answered(
+      await save((current) => ({ titleFilter: mergeTitleFilter(current.titleFilter, shown, wanted) }), undefined, {
+        titleFilter: wanted,
+      }),
+    ),
+  );
 }
 
 // The save itself. Resolves to { kind: "ok" }, { kind: "refused", message }
-// (a value WatchDesk would refuse; nothing was sent) or a failure as
+// (a value WatchDesk would refuse; it was not sent) or a failure as
 // watchdesk-api.js names it. `given` is the connection to save on; without
-// one it is the connection as it is now.
-async function save(patch, given) {
+// one it is the connection as it is now. `patch` is the fields to change, or
+// a function of the account's settings that returns them; `asked` is then
+// what the user asked for, which is checked before anything is sent.
+async function save(patch, given, asked = patch) {
   try {
-    const problem = settingsProblem(patch);
+    const problem = settingsProblem(asked);
     if (problem) return { kind: "refused", message: problem };
 
     const connection = given ?? (await captureConnection());
     if (!connection) return { kind: "unauthorized" };
-    const result = await readModifyWrite(patch, connection);
+    const result = await readModifyWrite(patch, connection, settingsProblem);
     if (result.kind !== "ok") {
       if (result.current) await storeCopy(result.current, connection);
       // After the copy, which records a sync: the line then says what

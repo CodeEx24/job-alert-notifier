@@ -119,6 +119,25 @@ Reference documents in the WatchDesk repository:
   `chrome.storage.local` (`watchdeskSettingsBeforeConnect`) and uploaded only
   by the import the user asked for (WD-81). `watcherState` is still never
   read back.
+- **A web change reaches the extension on its next check, and only then**
+  (WD-80). There is no settings poll of its own: the one GET of
+  `/api/settings` a cycle makes is in the alarm listener, **before**
+  `runAllChecks()` (never after it, or a change is a cycle late), and at the
+  popup's own loads. Nothing a cycle needs may live in a module variable: the
+  worker is often started by the alarm itself. When that GET changes what the
+  popup shows, the worker sends `settings-changed` (`{ settings,
+  settingsSync }`, never the token) and an open popup applies it through
+  `applySettingsAnswer()`, which leaves a keyword being typed and a change
+  still being saved alone. Paused, there is no alarm and nothing is fetched
+  until the popup opens or watching starts. A keyword-filter change from the
+  popup is applied to the filter the account holds at that moment
+  (`saveAccountTitleFilter()` / `mergeTitleFilter()`: the switch, the
+  keywords added, the keywords removed), not sent as the popup's whole list;
+  the local copy is used only to tell what the user changed, never as the PUT
+  body. `watcherState` stays this browser's: reported, never read back. The
+  route has no version check, so a web save landing between this browser's
+  GET and PUT is still lost; do not paper over that on the client
+  (`docs/tickets/WD-80.md`, "What the API would need").
 - **A freshly paired browser syncs nothing until the user has answered the
   import question** (WD-81). `completePairing()` writes `watchdeskImport`
   (`{ phase: "connecting" }`) in the same storage call as the token; while it
@@ -162,7 +181,7 @@ Reference documents in the WatchDesk repository:
 | `watch-sync.js` | The watch list of a connected browser: sync with the account, first-connection upload, add / rename / pause / remove through the API (WD-54), adding an imported backup's watches (WD-111), and the import's watch step and the watches set aside by "Not now" (WD-81) |
 | `local-import.js` | The import of a browser's own watches, feed and settings into an account it has just been connected to (WD-81): deciding whether to ask, the user's answer, and the resumable upload (watches, listings, applied marks, settings) |
 | `watcher-state.js` | Whether the periodic check is running or paused, kept in this browser, and reporting it to the connected account's settings (WD-71) |
-| `account-settings.js` | The settings of a connected browser (WD-79): the last-synced copy the check cycle reads, loading and saving them through the API, the settings kept from before connecting, and `changeAccountSettings()`, the one read-modify-write every PUT of the account's settings goes through |
+| `account-settings.js` | The settings of a connected browser (WD-79): the last-synced copy the check cycle reads, loading and saving them through the API, the settings kept from before connecting, and `changeAccountSettings()`, the one read-modify-write every PUT of the account's settings goes through; a keyword-filter change applied to the account's current filter (`saveAccountTitleFilter()`, WD-80) |
 | `settings-limits.js` | What WatchDesk accepts for a setting, copied from its `lib/settings.ts` and `lib/validation/settings.ts` (WD-79) |
 | `popup-settings-sync.js` | The line at the top of the settings panel that says where the settings are saved (this browser only, or the account), and the reason a change was refused (WD-79) |
 | `popup.html` / `popup.css` / `popup.js` | The popup |

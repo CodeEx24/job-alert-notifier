@@ -69,6 +69,7 @@ import {
   usesAccountSettings,
   syncAccountSettings,
   saveAccountSettings,
+  saveAccountTitleFilter,
   getSettingsSyncStatus,
 } from "./account-settings.js";
 import {
@@ -306,6 +307,31 @@ async function settingsAnswer(result = {}) {
     settings: { intervalMinutes, soundId, notificationsMuted, titleFilter },
     settingsSync: await getSettingsSyncStatus(),
   };
+}
+
+// WD-80: brings the copy of a connected account's settings in step before a
+// check the popup did not ask for (an alarm tick), then, if that changed
+// anything the popup shows (a setting, or whether WatchDesk could be asked),
+// tells a popup that happens to be open, so its controls show what the check
+// is about to run on. One GET, the one WD-79 already made here; it never
+// throws, and a failure leaves the copy as it was. With no account
+// connected, and (WD-81) while the import question is unanswered, nothing is
+// sent and nothing told.
+async function syncSettingsBeforeCheck() {
+  if (!(await usesAccountSettings())) return;
+  // When the copy was last brought in step is not shown, only whether it
+  // ever was.
+  const shown = ({ settings, settingsSync }) =>
+    JSON.stringify([settings, settingsSync.mode, settingsSync.problem ?? null, settingsSync.lastSyncedAt != null]);
+  const before = await settingsAnswer();
+  await syncAccountSettings().catch(() => {});
+  const after = await settingsAnswer();
+  if (shown(before) === shown(after)) return;
+  try {
+    await chrome.runtime.sendMessage({ type: "settings-changed", ...after });
+  } catch {
+    // No popup open.
+  }
 }
 
 // One-time-per-entry self-heal for a real bug: before cleanTitle() existed
@@ -1202,7 +1228,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   // WD-79: and the settings, the same way and at the same time, so the two
   // requests cost the check one wait and not two: an interval, a sound, mute
   // or a keyword changed on WatchDesk applies to this check.
-  await Promise.all([syncWatches().catch(() => {}), syncAccountSettings().catch(() => {})]);
+  // WD-80: the worker may have been started by this very alarm; the settings
+  // are fetched before the check either way, never after it, and an open
+  // popup is told what they now are.
+  await Promise.all([syncWatches().catch(() => {}), syncSettingsBeforeCheck().catch(() => {})]);
   let checked = [];
   try {
     checked = await runAllChecks({ lateByMs });
@@ -1639,7 +1668,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         if (await usesAccountSettings()) {
           // WatchDesk trims the keywords and drops repeats; the filter
           // answered is the one it kept, or after a refusal the one it has.
-          const answer = await settingsAnswer(await saveAccountSettings({ titleFilter }));
+          // WD-80: the popup sends its whole list, but only what the user
+          // changed in it (against the copy, which is what the popup was
+          // showing) is applied to the filter the account holds now, so a
+          // keyword added on the web since the popup loaded is not removed.
+          const shown = (await getSettings()).titleFilter;
+          const answer = await settingsAnswer(await saveAccountTitleFilter(titleFilter, shown));
           sendResponse({ ...answer, titleFilter: answer.settings.titleFilter });
           break;
         }
